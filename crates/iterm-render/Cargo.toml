@@ -1,0 +1,10 @@
+[package]
+name = "iterm-render"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+iterm-profile = { path = "../iterm-profile" }
+iterm-vt = { path = "../iterm-vt" }
+parking_lot.workspace = true
+rustc-hash.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "iterm-pty"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crossbeam-channel.workspace = true
+iterm-profile = { path = "../iterm-profile" }
+iterm-vt = { path = "../iterm-vt" }
+libc.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true

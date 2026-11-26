@@ -1,0 +1,14 @@
+[package]
+name = "iterm-vt"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+base64.workspace = true
+bitflags.workspace = true
+image.workspace = true
+iterm-profile = { path = "../iterm-profile" }
+memchr.workspace = true
+regex-lite.workspace = true
+rustc-hash.workspace = true
+unicode-width.workspace = true

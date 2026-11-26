@@ -1,0 +1,181 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/iterm-profile",
+    "crates/iterm-vt",
+    "crates/iterm-pty",
+    "crates/iterm-render",
+    "crates/iterm-app",
+]
+
+[workspace.package]
+version = "0.1.15"
+edition = "2021"
+license = "MIT"
+authors = ["moomou"]
+
+[workspace.dependencies]
+base64 = "0.23"
+bitflags = "2.13"
+crossbeam-channel = "0.5"
+env_logger = "0.11"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+libc = "0.2"
+log = "0.4"
+memchr = "2.8"
+parking_lot = "0.12"
+plist = "1.10"
+regex-lite = "0.1"
+rustc-hash = "2.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+unicode-width = "0.2"
+
+# Native macOS bindings (pure Rust via objc2 0.6 / framework crates 0.3)
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "alloc",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "objc2-quartz-core",
+    "NSApplication",
+    "NSButton",
+    "NSCell",
+    "NSColor",
+    "NSControl",
+    "NSCursor",
+    "NSEvent",
+    "NSFont",
+    "NSGraphics",
+    "NSGraphicsContext",
+    "NSMenu",
+    "NSMenuItem",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSPopUpButton",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSSlider",
+    "NSTextField",
+    "NSView",
+    "NSVisualEffectView",
+    "NSWindow",
+    "NSWorkspace",
+    "NSAlert",
+    "NSSavePanel",
+    "NSOpenPanel",
+    "NSTextInputClient",
+    "NSDragging",
+    "NSPanel",
+    "NSLayoutConstraint",
+] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "alloc",
+    "CFCGTypes",
+    "CFString",
+    "CFDictionary",
+    "CFArray",
+    "CFAttributedString",
+    "CFNumber",
+    "CFBase",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "alloc",
+    "CGBitmapContext",
+    "CGColor",
+    "CGColorSpace",
+    "CGContext",
+    "CGFont",
+    "CGImage",
+    "CGGeometry",
+    "CGPath",
+    "CGDataProvider",
+] }
+objc2-core-text = { version = "0.3", default-features = false, features = [
+    "std",
+    "alloc",
+    "objc2-core-graphics",
+    "CTFont",
+    "CTFontDescriptor",
+    "CTFontTraits",
+    "CTLine",
+    "CTRun",
+    "CTStringAttributes",
+] }
+objc2-core-video = { version = "0.3", default-features = false, features = [
+    "std",
+    "alloc",
+    "CVBase",
+    "CVDisplayLink",
+    "CVReturn",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "alloc",
+    "block2",
+    "NSArray",
+    "NSAttributedString",
+    "NSBundle",
+    "NSData",
+    "NSDictionary",
+    "NSError",
+    "NSGeometry",
+    "NSNotification",
+    "NSObject",
+    "NSProcessInfo",
+    "NSRange",
+    "NSRunLoop",
+    "NSString",
+    "NSThread",
+    "NSTimer",
+    "NSURL",
+    "NSUserDefaults",
+    "NSValue",
+] }
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std",
+    "alloc",
+    "block2",
+    "objc2-core-foundation",
+    "MTLBuffer",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLDevice",
+    "MTLDrawable",
+    "MTLLibrary",
+    "MTLPixelFormat",
+    "MTLRenderCommandEncoder",
+    "MTLRenderPass",
+    "MTLRenderPipeline",
+    "MTLResource",
+    "MTLSampler",
+    "MTLTexture",
+    "MTLTypes",
+    "MTLVertexDescriptor",
+] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = [
+    "std",
+    "alloc",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "objc2-metal",
+    "CALayer",
+    "CAMetalLayer",
+    "CATransaction",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Deterministic remote artifact emitter for iTermMinimal (works over SSH and inside regular tmux!).
+# Usage: it2artifact <file> [file ...]
+# Emits OSC 1337;Artifact=v=1;... stamped onto the printed path so Cmd+Click downloads
+# via OpenSSH ControlMaster /usr/bin/scp without fragile CWD/host heuristic guessing.
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $(basename "$0") <file> [file ...]" >&2
+  exit 1
+fi
+
+b64_nowrap() {
+  if base64 --version 2>&1 | grep -q GNU; then
+    base64 -w0
+  else
+    base64 | tr -d '\n'
+  fi
+}
+
+print_osc() {
+  if [[ "${TERM:-}" == screen* || "${TERM:-}" == tmux* || -n "${TMUX:-}" ]]; then
+    printf '\033Ptmux;\033\033]'
+  else
+    printf '\033]'
+  fi
+}
+
+print_st() {
+  if [[ "${TERM:-}" == screen* || "${TERM:-}" == tmux* || -n "${TMUX:-}" ]]; then
+    printf '\007\033\\'
+  else
+    printf '\007'
+  fi
+}
+
+HOST_SPEC="${ITERM_ARTIFACT_HOST:-${USER}@$(hostname -f 2>/dev/null || hostname)}"
+HOST_B64="$(printf '%s' "$HOST_SPEC" | b64_nowrap)"
+
+for target in "$@"; do
+  if [[ ! -e "$target" ]]; then
+    echo "it2artifact: not found: $target" >&2
+    continue
+  fi
+  ABS_PATH="$(realpath "$target" 2>/dev/null || python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$target")"
+  PATH_B64="$(printf '%s' "$ABS_PATH" | b64_nowrap)"
+  SIZE="$(wc -c < "$ABS_PATH" 2>/dev/null | tr -d ' ' || echo 0)"
+  KIND="file"
+  [[ -d "$ABS_PATH" ]] && KIND="dir"
+  LEN="${#target}"
+
+  print_osc
+  printf '1337;Artifact=v=1;host_b64=%s;path_b64=%s;kind=%s;size=%s;len=%s' \
+    "$HOST_B64" "$PATH_B64" "$KIND" "$SIZE" "$LEN"
+  print_st
+  printf '%s\n' "$target"
+done

@@ -1,0 +1,36 @@
+[package]
+name = "iterm-app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "iterm-minimal"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+crossbeam-channel.workspace = true
+env_logger.workspace = true
+image.workspace = true
+iterm-profile = { path = "../iterm-profile" }
+iterm-pty = { path = "../iterm-pty" }
+iterm-render = { path = "../iterm-render" }
+iterm-vt = { path = "../iterm-vt" }
+libc.workspace = true
+log.workspace = true
+parking_lot.workspace = true
+rustc-hash.workspace = true
+unicode-width.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+dispatch2.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-core-text.workspace = true
+objc2-core-video.workspace = true
+objc2-foundation.workspace = true
+objc2-metal.workspace = true
+objc2-quartz-core.workspace = true
