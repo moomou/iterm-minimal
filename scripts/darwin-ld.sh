@@ -1,7 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Locate rustup's bundled ld64.lld (LLVM Mach-O linker)
+# Native macOS host: strip `-flavor darwin` and duplicate `-arch`, then invoke Apple's `/usr/bin/ld` directly!
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  args=()
+  has_arch=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -flavor)
+        shift 2
+        ;;
+      -arch)
+        if [[ "$has_arch" -eq 0 ]]; then
+          has_arch=1
+          args+=("$1" "$2")
+        fi
+        shift 2
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  exec /usr/bin/ld "${args[@]}"
+fi
+
+# Linux cross-compilation host: locate rustup's bundled ld64.lld (LLVM Mach-O linker)
 SYSROOT="$(rustc --print sysroot)"
 HOST="$(rustc -vV | awk '/^host:/ { print $2 }')"
 LD64="${LD64_LLD:-${SYSROOT}/lib/rustlib/${HOST}/bin/gcc-ld/ld64.lld}"
