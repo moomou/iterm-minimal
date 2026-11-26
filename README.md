@@ -76,6 +76,7 @@ Download from GitHub Releases (`https://github.com/moomou/iterm-minimal/releases
 | `Cmd+,` | Open native Preferences window |
 | `Cmd+F` / `Cmd+G` / `Cmd+Shift+G` | Inline Find / next / previous match |
 | `Cmd+K` | Clear scrollback & screen buffer |
+| `Cmd+Opt+L` | Toggle live SCP Transfers queue & progress overlay (cancel `[x]` / Clear) |
 | `Cmd+Opt+I` | Toggle live Metal GPU Performance HUD |
 | `Cmd+Click` | Semantic History (open URL / local file / SCP download remote artifact) |
 | `Cmd+V` / Drag & Drop | Paste text, local file paths, or auto-upload files/screenshots via SSH `scp` |

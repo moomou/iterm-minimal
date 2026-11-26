@@ -18,7 +18,7 @@ use crossbeam_channel::{unbounded, Receiver, Sender};
 use iterm_profile::{AppConfig, Profile, SmartSelector};
 use iterm_pty::{
     save_inline_download, shell_escape_path, FocusDirection, PaneRect, PtySize, SessionId,
-    SplitAxis, TabManager, TerminalSession, WakeCallback,
+    SplitAxis, TabManager, TerminalSession, TransferId, TransferQueue, WakeCallback,
 };
 use iterm_render::{
     CachedShaper, FrameBatches, GlyphAtlas, PaneRenderCache, PaneSnapshot, QuadInstance,
@@ -71,15 +71,25 @@ pub(crate) struct DragDividerState {
     pub(crate) axis: SplitAxis,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum TransferActionHit {
+    Cancel(TransferId),
+    ClearFinished,
+    Dismiss,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TransferHitbox {
+    pub(crate) rect: [f32; 4],
+    pub(crate) action: TransferActionHit,
+}
+
 /// Completed background file transfer event delivered back to the UI thread.
 pub(crate) enum AsyncPasteResult {
     Uploaded {
         sid: SessionId,
         remote_path: String,
         bytes: u64,
-    },
-    Toast {
-        msg: String,
     },
     Failed {
         label: String,
@@ -121,6 +131,9 @@ pub struct TerminalWindowState {
     pub(crate) metal_layer: Retained<CAMetalLayer>,
     pub(crate) window_focused: bool,
     pub(crate) show_perf_hud: bool,
+    pub(crate) show_transfers: bool,
+    pub(crate) transfers: TransferQueue,
+    pub(crate) transfer_hitboxes: Vec<TransferHitbox>,
     pub(crate) saved_transparency: f32,
     pub(crate) window_opacity_dirty: bool,
     pub(crate) last_cpu_prep_ms: f32,
@@ -177,6 +190,13 @@ impl TerminalWindowState {
         let smart_selector = SmartSelector::new(&profile.smart_selection_rules);
         let local_hostname = get_local_hostname();
         let (upload_tx, upload_rx) = unbounded();
+        let transfers = {
+            let wf = Arc::clone(&wake_flag);
+            TransferQueue::new(4, move || {
+                wf.store(true, Ordering::Release);
+                schedule_main_wakeup();
+            })
+        };
 
         let saved_transparency = if profile.transparency > 0.001 {
             profile.transparency
@@ -217,6 +237,9 @@ impl TerminalWindowState {
             metal_layer,
             window_focused: true,
             show_perf_hud: false,
+            show_transfers: false,
+            transfers,
+            transfer_hitboxes: Vec::new(),
             saved_transparency,
             window_opacity_dirty: false,
             last_cpu_prep_ms: 0.0,
@@ -386,13 +409,13 @@ impl TerminalWindowState {
                     TerminalEvent::FileDownload { name, data } => {
                         match save_inline_download(&self.app_cfg.download_dir, &name, &data) {
                             Ok(dest) => {
-                                let msg = format!(
-                                    "Downloaded {} ({} bytes)",
-                                    dest.file_name().and_then(|s| s.to_str()).unwrap_or(&name),
-                                    data.len()
-                                );
-                                log::info!("{msg} -> {}", dest.display());
-                                self.status_toast = Some((msg, Instant::now() + Duration::from_secs(4)));
+                                let label = dest
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or(&name)
+                                    .to_string();
+                                log::info!("Downloaded {label} ({} bytes) -> {}", data.len(), dest.display());
+                                self.transfers.record_inline_completed(label, dest, data.len() as u64);
                                 self.wake_flag.store(true, Ordering::Release);
                             }
                             Err(e) => {
@@ -451,10 +474,6 @@ impl TerminalWindowState {
                         format!("Uploaded -> {remote_path} ({bytes} B)"),
                         Instant::now() + Duration::from_secs(4),
                     ));
-                    self.wake_flag.store(true, Ordering::Release);
-                }
-                AsyncPasteResult::Toast { msg } => {
-                    self.status_toast = Some((msg, Instant::now() + Duration::from_secs(4)));
                     self.wake_flag.store(true, Ordering::Release);
                 }
                 AsyncPasteResult::Failed { label, error } => {
@@ -758,6 +777,10 @@ impl TerminalWindowState {
                 self.window_opacity_dirty = true;
                 self.wake_flag.store(true, Ordering::Release);
             }
+            UiCommand::ToggleTransfers => {
+                self.show_transfers = !self.show_transfers;
+                self.wake_flag.store(true, Ordering::Release);
+            }
             UiCommand::TogglePerfHud => {
                 self.show_perf_hud = !self.show_perf_hud;
                 self.wake_flag.store(true, Ordering::Release);
@@ -843,6 +866,21 @@ impl TerminalWindowState {
                 any_dirty = true;
             } else {
                 self.visual_bell_until = None;
+                any_dirty = true;
+            }
+        }
+        // Auto-hide the Transfer Queue card cleanly 5 seconds after the last transfer finishes
+        if !any_dirty
+            && !self.show_transfers
+            && !self.transfer_hitboxes.is_empty()
+            && self.transfers.active_count() == 0
+        {
+            let now = Instant::now();
+            let any_recent = self.transfers.snapshots().into_iter().any(|t| {
+                t.finished_at
+                    .is_some_and(|fin| now.saturating_duration_since(fin) < Duration::from_secs(5))
+            });
+            if !any_recent {
                 any_dirty = true;
             }
         }

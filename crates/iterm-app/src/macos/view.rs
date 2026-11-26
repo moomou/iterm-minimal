@@ -7,7 +7,7 @@ use crate::input_logic::{
 use crate::macos::chrome::{word_bounds_at, DIVIDER_WIDTH_PT};
 use crate::macos::clipboard::{read_pasteboard_files, write_clipboard};
 use crate::macos::coretext_shaper::CoreTextShaper;
-use crate::macos::window::{DragDividerState, TerminalWindowState};
+use crate::macos::window::{DragDividerState, TerminalWindowState, TransferActionHit};
 use iterm_profile::{modifiers, AppConfig, OptionKeyMode, Profile, SmartSelector};
 use iterm_pty::SplitAxis;
 use iterm_render::TextShaper;
@@ -313,6 +313,31 @@ define_class!(
                 return;
             }
             st.ime.clear();
+
+            // Transfer Queue overlay buttons ([x] cancel, Clear, Dismiss)
+            for hb in &st.transfer_hitboxes {
+                let r = hb.rect;
+                if px >= r[0] && px <= r[0] + r[2] && py >= r[1] && py <= r[1] + r[3] {
+                    match hb.action {
+                        TransferActionHit::Cancel(id) => {
+                            st.transfers.cancel(id);
+                        }
+                        TransferActionHit::ClearFinished => {
+                            st.transfers.clear_finished();
+                            if st.transfers.active_count() == 0 {
+                                st.show_transfers = false;
+                            }
+                        }
+                        TransferActionHit::Dismiss => {
+                            st.show_transfers = false;
+                            st.transfers.clear_finished();
+                        }
+                    }
+                    st.wake_flag.store(true, Ordering::Release);
+                    st.render_if_needed(vp_w, vp_h);
+                    return;
+                }
+            }
 
             // Unified titlebar/tab bar interaction (level with red/yellow/green traffic lights!)
             let tab_h = st.tab_bar_height_px();
@@ -702,6 +727,7 @@ define_class!(
             menu.addItem(&NSMenuItem::separatorItem(mtm));
             add_ctx("Clear Buffer", sel!(ctxClearBuffer:));
             add_ctx("Use Transparency", sel!(ctxToggleTransparency:));
+            add_ctx("Transfers", sel!(ctxToggleTransfers:));
             add_ctx("Toggle Performance HUD", sel!(ctxTogglePerfHud:));
             add_ctx("Settings…", sel!(ctxOpenPreferences:));
             NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
@@ -735,6 +761,11 @@ define_class!(
         #[unsafe(method(ctxToggleTransparency:))]
         fn ctx_toggle_transparency(&self, _sender: Option<&AnyObject>) {
             self.send_command(UiCommand::ToggleTransparency);
+        }
+
+        #[unsafe(method(ctxToggleTransfers:))]
+        fn ctx_toggle_transfers(&self, _sender: Option<&AnyObject>) {
+            self.send_command(UiCommand::ToggleTransfers);
         }
 
         #[unsafe(method(ctxTogglePerfHud:))]

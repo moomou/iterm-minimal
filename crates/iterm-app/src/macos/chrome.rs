@@ -5,13 +5,15 @@
 //! - Pure text helpers (`get_local_hostname`, `word_bounds_at`, `extract_word_at`)
 
 use crate::macos::coretext_shaper::CoreTextShaper;
-use crate::macos::window::{ImeState, TerminalWindowState};
+use crate::macos::window::{
+    ImeState, TerminalWindowState, TransferActionHit, TransferHitbox,
+};
 use iterm_profile::{is_word_char, Profile};
-use iterm_pty::{PaneRect, SessionId};
+use iterm_pty::{format_bytes, PaneRect, SessionId, TransferDirection, TransferState};
 use iterm_render::{
     CachedShaper, FontStyle, GlyphAtlas, GlyphInstance, GlyphKey, QuadInstance, TextShaper,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Compact unified titlebar + tab bar height (tightly aligned with macOS traffic lights at y=8..20pt).
 pub(crate) const TITLEBAR_HEIGHT_PT: f32 = 26.0;
@@ -257,14 +259,269 @@ impl TerminalWindowState {
             );
         }
 
-        // Status toast overlay (bottom-right pill for download/upload completion)
+        // Live Transfer Queue HUD card (bottom-right, zero focus stealing!):
+        // Auto-shows whenever any scp transfer is Queued/Running or finished within 5s,
+        // or whenever manually toggled open via View -> Transfers (Cmd+Opt+L).
+        self.transfer_hitboxes.clear();
+        let now_t = Instant::now();
+        let all_transfers = self.transfers.snapshots();
+        let visible_transfers: Vec<_> = all_transfers
+            .into_iter()
+            .filter(|t| {
+                self.show_transfers
+                    || matches!(t.state, TransferState::Queued | TransferState::Running)
+                    || t.finished_at
+                        .is_some_and(|fin| now_t.saturating_duration_since(fin) < Duration::from_secs(5))
+            })
+            .take(6)
+            .collect();
+
+        let mut bottom_right_occupied_h = 0.0f32;
+        if self.show_transfers || !visible_transfers.is_empty() {
+            let m = self.ui_shaper.metrics();
+            let s = self.scale_factor;
+            let card_w = (360.0 * s).min(vp_w - 20.0 * s).max(200.0 * s);
+            let header_h = (22.0 * s).max(m.cell_height + 4.0 * s);
+            let row_h = (36.0 * s).max(m.cell_height * 2.0 + 10.0 * s);
+            let rows_n = visible_transfers.len().max(1);
+            let pad = 8.0 * s;
+            let card_h = (header_h + rows_n as f32 * row_h + pad).min(vp_h - tab_h - 20.0 * s);
+            let cx = vp_w - card_w - 10.0 * s;
+            let cy = vp_h - card_h - 10.0 * s;
+            bottom_right_occupied_h = card_h + 16.0 * s;
+
+            // Card backdrop
+            self.batches.overlay_quads.push(QuadInstance {
+                rect: [cx, cy, card_w, card_h],
+                color: [0.10, 0.11, 0.15, 0.95],
+                mode: 3,
+                param: 7.0 * s,
+                _pad: [0.0; 2],
+            });
+            // Subtle header divider
+            self.batches.overlay_quads.push(QuadInstance {
+                rect: [cx + pad, cy + header_h, card_w - pad * 2.0, s.max(1.0)],
+                color: [1.0, 1.0, 1.0, 0.09],
+                mode: 0,
+                param: 0.0,
+                _pad: [0.0; 2],
+            });
+
+            let active_n = self.transfers.active_count();
+            let hdr_text = if active_n > 0 {
+                format!("Transfers ({active_n} active)")
+            } else {
+                "Transfers".to_string()
+            };
+            let hdr_base_y = cy + ((header_h - m.cell_height) * 0.5).max(1.0) + m.baseline_y;
+            render_ui_string(
+                &hdr_text,
+                32,
+                cx + pad,
+                hdr_base_y,
+                [0.92, 0.94, 0.98, 1.0],
+                &mut self.ui_shaper,
+                &self.atlas,
+                &mut self.batches.overlay_glyphs,
+            );
+
+            // Header [Clear] and [x] buttons
+            let close_w = (20.0 * s).max(m.cell_width * 2.2);
+            let close_x = cx + card_w - pad - close_w;
+            let btn_y = cy + 3.0 * s;
+            let btn_h = (header_h - 6.0 * s).max(m.cell_height);
+            self.transfer_hitboxes.push(TransferHitbox {
+                rect: [close_x, btn_y, close_w, btn_h],
+                action: TransferActionHit::Dismiss,
+            });
+            render_ui_string(
+                "x",
+                1,
+                close_x + (close_w - m.cell_width) * 0.5,
+                hdr_base_y,
+                [0.65, 0.68, 0.75, 0.95],
+                &mut self.ui_shaper,
+                &self.atlas,
+                &mut self.batches.overlay_glyphs,
+            );
+
+            let has_finished = visible_transfers
+                .iter()
+                .any(|t| !matches!(t.state, TransferState::Queued | TransferState::Running));
+            if has_finished {
+                let clear_w = (44.0 * s).max(m.cell_width * 5.6);
+                let clear_x = close_x - clear_w - 6.0 * s;
+                self.batches.overlay_quads.push(QuadInstance {
+                    rect: [clear_x, btn_y, clear_w, btn_h],
+                    color: [1.0, 1.0, 1.0, 0.08],
+                    mode: 3,
+                    param: 4.0 * s,
+                    _pad: [0.0; 2],
+                });
+                self.transfer_hitboxes.push(TransferHitbox {
+                    rect: [clear_x, btn_y, clear_w, btn_h],
+                    action: TransferActionHit::ClearFinished,
+                });
+                render_ui_string(
+                    "Clear",
+                    5,
+                    clear_x + (clear_w - m.cell_width * 5.0) * 0.5,
+                    hdr_base_y,
+                    [0.78, 0.82, 0.90, 0.95],
+                    &mut self.ui_shaper,
+                    &self.atlas,
+                    &mut self.batches.overlay_glyphs,
+                );
+            }
+
+            if visible_transfers.is_empty() {
+                let ry = cy + header_h + 6.0 * s;
+                render_ui_string(
+                    "No active transfers (Cmd+Click remote file or Cmd+V)",
+                    ((card_w - pad * 2.0) / m.cell_width).floor().max(1.0) as usize,
+                    cx + pad,
+                    ry + m.baseline_y,
+                    [0.58, 0.62, 0.70, 0.9],
+                    &mut self.ui_shaper,
+                    &self.atlas,
+                    &mut self.batches.overlay_glyphs,
+                );
+            } else {
+                for (i, t) in visible_transfers.iter().enumerate() {
+                    let ry = cy + header_h + 4.0 * s + i as f32 * row_h;
+                    if ry + row_h > cy + card_h + 2.0 * s {
+                        break;
+                    }
+                    let dir_sym = match t.direction {
+                        TransferDirection::Download => "↓",
+                        TransferDirection::Upload => "↑",
+                    };
+                    let title_line = format!("{dir_sym} {} ({})", t.label, t.host);
+                    let is_active = matches!(t.state, TransferState::Queued | TransferState::Running);
+                    let cancel_w = if is_active { (20.0 * s).max(m.cell_width * 2.2) } else { 0.0 };
+                    let text_w = (card_w - pad * 2.0 - cancel_w - 4.0 * s).max(20.0);
+                    let max_chars = (text_w / m.cell_width).floor().max(1.0) as usize;
+                    render_ui_string(
+                        &title_line,
+                        max_chars,
+                        cx + pad,
+                        ry + m.baseline_y,
+                        [0.92, 0.95, 0.99, 1.0],
+                        &mut self.ui_shaper,
+                        &self.atlas,
+                        &mut self.batches.overlay_glyphs,
+                    );
+
+                    // Cancel [x] button for Queued/Running transfers
+                    if is_active {
+                        let bx = cx + card_w - pad - cancel_w;
+                        self.batches.overlay_quads.push(QuadInstance {
+                            rect: [bx, ry, cancel_w, m.cell_height + 2.0 * s],
+                            color: [0.85, 0.25, 0.25, 0.28],
+                            mode: 3,
+                            param: 4.0 * s,
+                            _pad: [0.0; 2],
+                        });
+                        self.transfer_hitboxes.push(TransferHitbox {
+                            rect: [bx, ry, cancel_w, m.cell_height + 2.0 * s],
+                            action: TransferActionHit::Cancel(t.id),
+                        });
+                        render_ui_string(
+                            "x",
+                            1,
+                            bx + (cancel_w - m.cell_width) * 0.5,
+                            ry + m.baseline_y,
+                            [1.0, 0.65, 0.65, 1.0],
+                            &mut self.ui_shaper,
+                            &self.atlas,
+                            &mut self.batches.overlay_glyphs,
+                        );
+                    }
+
+                    // Progress bar track + smooth fill
+                    let bar_y = ry + m.cell_height + 3.0 * s;
+                    let bar_h = (5.0 * s).max(4.0);
+                    let bar_w = (card_w - pad * 2.0).max(20.0);
+                    self.batches.overlay_quads.push(QuadInstance {
+                        rect: [cx + pad, bar_y, bar_w, bar_h],
+                        color: [1.0, 1.0, 1.0, 0.12],
+                        mode: 3,
+                        param: bar_h * 0.5,
+                        _pad: [0.0; 2],
+                    });
+                    let (frac, bar_col) = match &t.state {
+                        TransferState::Queued => (0.04f32, [0.55, 0.62, 0.78, 0.9]),
+                        TransferState::Running => (
+                            (t.percent.unwrap_or(8) as f32 / 100.0).clamp(0.05, 1.0),
+                            [0.36, 0.78, 1.0, 0.98],
+                        ),
+                        TransferState::Completed => (1.0, [0.35, 0.90, 0.52, 0.98]),
+                        TransferState::Failed(_) => (1.0, [0.95, 0.35, 0.35, 0.95]),
+                        TransferState::Cancelled => (
+                            (t.percent.unwrap_or(0) as f32 / 100.0).clamp(0.0, 1.0),
+                            [0.65, 0.58, 0.42, 0.85],
+                        ),
+                    };
+                    if frac > 0.0 {
+                        self.batches.overlay_quads.push(QuadInstance {
+                            rect: [cx + pad, bar_y, (bar_w * frac).max(bar_h), bar_h],
+                            color: bar_col,
+                            mode: 3,
+                            param: bar_h * 0.5,
+                            _pad: [0.0; 2],
+                        });
+                    }
+
+                    // Status subtitle (%, bytes, speed, ETA or outcome)
+                    let sub = match &t.state {
+                        TransferState::Queued => "Queued...".to_string(),
+                        TransferState::Running => {
+                            let pct_s = t
+                                .percent
+                                .map(|p| format!("{p}%"))
+                                .unwrap_or_else(|| "...".into());
+                            let bytes_s = format_bytes(t.bytes_done);
+                            let mut parts = vec![pct_s, bytes_s];
+                            if !t.speed.is_empty() {
+                                parts.push(t.speed.clone());
+                            }
+                            if !t.eta.is_empty() {
+                                parts.push(format!("ETA {}", t.eta));
+                            }
+                            parts.join("  ")
+                        }
+                        TransferState::Completed => format!("Done  {}", format_bytes(t.bytes_done)),
+                        TransferState::Cancelled => "Cancelled".to_string(),
+                        TransferState::Failed(err) => format!("Failed: {err}"),
+                    };
+                    let sub_col = match &t.state {
+                        TransferState::Completed => [0.68, 0.96, 0.76, 0.95],
+                        TransferState::Failed(_) => [1.0, 0.58, 0.58, 0.98],
+                        _ => [0.72, 0.78, 0.88, 0.92],
+                    };
+                    let sub_max = ((card_w - pad * 2.0) / m.cell_width).floor().max(1.0) as usize;
+                    render_ui_string(
+                        &sub,
+                        sub_max,
+                        cx + pad,
+                        bar_y + bar_h + 2.0 * s + m.baseline_y * 0.88,
+                        sub_col,
+                        &mut self.ui_shaper,
+                        &self.atlas,
+                        &mut self.batches.overlay_glyphs,
+                    );
+                }
+            }
+        }
+
+        // Status toast overlay (bottom-right pill, floats cleanly above Transfer Queue card if visible)
         if let Some((ref msg, until)) = self.status_toast {
             if Instant::now() < until {
                 let m = self.ui_shaper.metrics();
                 let tw = ((msg.len() as f32 + 3.0) * m.cell_width).min(vp_w - 24.0);
                 let th = (FIND_BAR_HEIGHT_PT * self.scale_factor).max(m.cell_height + 6.0);
                 let tx = vp_w - tw - 10.0 * self.scale_factor;
-                let ty = vp_h - th - 10.0 * self.scale_factor;
+                let ty = vp_h - th - 10.0 * self.scale_factor - bottom_right_occupied_h;
                 self.batches.overlay_quads.push(QuadInstance {
                     rect: [tx, ty, tw, th],
                     color: [0.12, 0.22, 0.16, 0.94],

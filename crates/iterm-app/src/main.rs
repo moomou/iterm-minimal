@@ -301,5 +301,17 @@ mod tests {
             resolve_key_event_with_kitty(&cmd_u, &cfg, prof, TermModes::default(), 0),
             UiCommand::ToggleTransparency
         );
+        // Cmd+Opt+L toggles the live Transfers queue overlay
+        let cmd_opt_l = KeyEventInput {
+            key_code_char: 'l' as u32,
+            characters: "l".into(),
+            virtual_key: 37,
+            mods: modifiers::COMMAND | modifiers::OPTION,
+            is_right_option: false,
+        };
+        assert_eq!(
+            resolve_key_event_with_kitty(&cmd_opt_l, &cfg, prof, TermModes::default(), 0),
+            UiCommand::ToggleTransfers
+        );
     }
 }

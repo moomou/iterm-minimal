@@ -37,6 +37,7 @@ pub enum UiCommand {
     ToggleFullscreen,
     ToggleMouseReporting,
     ToggleTransparency,
+    ToggleTransfers,
     TogglePerfHud,
     JumpPrevPrompt,
     JumpNextPrompt,
@@ -143,6 +144,7 @@ pub fn resolve_key_event_with_kitty(
             ('0', false, false) => return UiCommand::FontReset,
             (',', false, false) => return UiCommand::OpenPreferences,
             ('u', false, false) => return UiCommand::ToggleTransparency,
+            ('l', false, true) => return UiCommand::ToggleTransfers,
             ('i', false, true) => return UiCommand::TogglePerfHud,
             ('1'..='9', false, false) => {
                 let idx = (ch as u8 - b'1') as usize;

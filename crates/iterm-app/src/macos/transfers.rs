@@ -4,17 +4,13 @@ use crate::macos::app::schedule_main_wakeup;
 use crate::macos::chrome::extract_word_at;
 use crate::macos::window::{AsyncPasteResult, TerminalWindowState};
 use iterm_profile::{resolve_semantic_target, SemanticTarget};
-use iterm_pty::{
-    download_artifact_async, download_remote_async, shell_escape_path, upload_file_async,
-    DownloadStatus, SessionId, UploadStatus,
-};
+use iterm_pty::{shell_escape_path, SessionId, TransferState};
 use objc2_app_kit::NSWorkspace;
 use objc2_foundation::{NSString, NSURL};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 impl TerminalWindowState {
     /// Detect if `sid` is currently connected to a remote SSH host via shell integration `RemoteHost`.
@@ -60,50 +56,34 @@ impl TerminalWindowState {
             for local in paths {
                 let tx = self.upload_tx.clone();
                 let wf = Arc::clone(&self.wake_flag);
-                let cleanup_path = if cleanup_after_remote_upload {
-                    Some(local.clone())
-                } else {
-                    None
-                };
-                let label = local
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("file")
-                    .to_string();
-                self.status_toast = Some((
-                    format!("Uploading {label} -> {remote_host}..."),
-                    Instant::now() + Duration::from_secs(5),
-                ));
-                self.wake_flag.store(true, Ordering::Release);
-                upload_file_async(local, remote_host.clone(), None, move |st| match st {
-                    UploadStatus::Completed { remote_path, bytes } => {
-                        if let Some(ref p) = cleanup_path {
-                            let _ = std::fs::remove_file(p);
+                self.transfers.enqueue_upload(
+                    local,
+                    remote_host.clone(),
+                    None,
+                    cleanup_after_remote_upload,
+                    Some(Box::new(move |snap| {
+                        match snap.state {
+                            TransferState::Completed => {
+                                let _ = tx.send(AsyncPasteResult::Uploaded {
+                                    sid,
+                                    remote_path: snap.dest_or_remote,
+                                    bytes: snap.bytes_done,
+                                });
+                            }
+                            TransferState::Failed(err) => {
+                                let _ = tx.send(AsyncPasteResult::Failed {
+                                    label: snap.label,
+                                    error: err,
+                                });
+                            }
+                            _ => {}
                         }
-                        let _ = tx.send(AsyncPasteResult::Uploaded {
-                            sid,
-                            remote_path,
-                            bytes,
-                        });
                         wf.store(true, Ordering::Release);
                         schedule_main_wakeup();
-                    }
-                    UploadStatus::Failed { local, error } => {
-                        if let Some(ref p) = cleanup_path {
-                            let _ = std::fs::remove_file(p);
-                        }
-                        let lbl = local
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("file")
-                            .to_string();
-                        let _ = tx.send(AsyncPasteResult::Failed { label: lbl, error });
-                        wf.store(true, Ordering::Release);
-                        schedule_main_wakeup();
-                    }
-                    UploadStatus::Started { .. } => {}
-                });
+                    })),
+                );
             }
+            self.wake_flag.store(true, Ordering::Release);
         } else if let Some(sess) = self.sessions.get(&sid) {
             let joined = paths
                 .iter()
@@ -168,67 +148,53 @@ impl TerminalWindowState {
                 }
             }
             SemanticTarget::ExplicitRemoteArtifact(art) => {
-                let path_label = art.abs_path.clone();
                 let dl_dir = self.app_cfg.download_dir.clone();
-                let tx = self.upload_tx.clone();
-                let wf = Arc::clone(&self.wake_flag);
-                self.status_toast = Some((
-                    format!("Downloading {}...", path_label),
-                    Instant::now() + Duration::from_secs(3),
-                ));
-                download_artifact_async(dl_dir, art, move |st| match st {
-                    DownloadStatus::Completed { dest, bytes } => {
-                        let fname = dest
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("file");
-                        log::info!("Artifact downloaded: {} ({bytes} bytes)", dest.display());
-                        let _ = tx.send(AsyncPasteResult::Toast {
-                            msg: format!("Downloaded {fname} ({bytes} B) -> ~/Downloads"),
-                        });
-                        wf.store(true, Ordering::Release);
-                        schedule_main_wakeup();
-                    }
-                    DownloadStatus::Failed { label, error } => {
-                        log::error!("Artifact download failed ({label}): {error}");
-                        let _ = tx.send(AsyncPasteResult::Failed { label, error });
-                        wf.store(true, Ordering::Release);
-                        schedule_main_wakeup();
-                    }
-                    DownloadStatus::Started { .. } => {}
-                });
+                self.transfers.enqueue_artifact(
+                    dl_dir,
+                    art,
+                    Some(Box::new(|snap| {
+                        match snap.state {
+                            TransferState::Completed => {
+                                log::info!(
+                                    "Artifact downloaded: {} ({} bytes)",
+                                    snap.dest_or_remote,
+                                    snap.bytes_done
+                                );
+                            }
+                            TransferState::Failed(ref err) => {
+                                log::error!("Artifact download failed ({}): {err}", snap.label);
+                            }
+                            _ => {}
+                        }
+                    })),
+                );
             }
             SemanticTarget::InferredRemoteFile {
                 host, remote_path, ..
             } => {
                 let dl_dir = self.app_cfg.download_dir.clone();
-                let tx = self.upload_tx.clone();
-                let wf = Arc::clone(&self.wake_flag);
-                self.status_toast = Some((
-                    format!("SCP {}:{}...", host, remote_path),
-                    Instant::now() + Duration::from_secs(3),
-                ));
-                download_remote_async(dl_dir, host, None, remote_path, move |st| match st {
-                    DownloadStatus::Completed { dest, bytes } => {
-                        let fname = dest
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("file");
-                        log::info!("Remote SCP downloaded: {} ({bytes} bytes)", dest.display());
-                        let _ = tx.send(AsyncPasteResult::Toast {
-                            msg: format!("Downloaded {fname} ({bytes} B) -> ~/Downloads"),
-                        });
-                        wf.store(true, Ordering::Release);
-                        schedule_main_wakeup();
-                    }
-                    DownloadStatus::Failed { label, error } => {
-                        log::error!("Remote SCP failed ({label}): {error}");
-                        let _ = tx.send(AsyncPasteResult::Failed { label, error });
-                        wf.store(true, Ordering::Release);
-                        schedule_main_wakeup();
-                    }
-                    DownloadStatus::Started { .. } => {}
-                });
+                self.transfers.enqueue_download(
+                    dl_dir,
+                    host,
+                    None,
+                    remote_path,
+                    None,
+                    Some(Box::new(|snap| {
+                        match snap.state {
+                            TransferState::Completed => {
+                                log::info!(
+                                    "Remote SCP downloaded: {} ({} bytes)",
+                                    snap.dest_or_remote,
+                                    snap.bytes_done
+                                );
+                            }
+                            TransferState::Failed(ref err) => {
+                                log::error!("Remote SCP failed ({}): {err}", snap.label);
+                            }
+                            _ => {}
+                        }
+                    })),
+                );
             }
             SemanticTarget::LocalFile { path, .. } => {
                 if path.exists() {

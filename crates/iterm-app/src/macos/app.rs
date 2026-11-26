@@ -183,6 +183,11 @@ define_class!(
             self.send_to_key_window(UiCommand::ToggleTransparency);
         }
 
+        #[unsafe(method(menuToggleTransfers:))]
+        fn menu_toggle_transfers(&self, _sender: Option<&AnyObject>) {
+            self.send_to_key_window(UiCommand::ToggleTransfers);
+        }
+
         #[unsafe(method(menuTogglePerfHud:))]
         fn menu_toggle_perf_hud(&self, _sender: Option<&AnyObject>) {
             self.send_to_key_window(UiCommand::TogglePerfHud);
@@ -477,6 +482,7 @@ fn build_menu_bar(mtm: MainThreadMarker, target: &AppController) -> Retained<NSM
     add_item(&view_menu, "Use Transparency", sel!(menuToggleTransparency:), "u", cmd, tgt);
     view_menu.addItem(&NSMenuItem::separatorItem(mtm));
     let cmd_opt = NSEventModifierFlags::Command | NSEventModifierFlags::Option;
+    add_item(&view_menu, "Transfers", sel!(menuToggleTransfers:), "l", cmd_opt, tgt);
     add_item(&view_menu, "Toggle Performance HUD", sel!(menuTogglePerfHud:), "i", cmd_opt, tgt);
 
     main_menu
