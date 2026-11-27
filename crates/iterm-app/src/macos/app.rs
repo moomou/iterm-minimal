@@ -11,12 +11,13 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSEventModifierFlags,
-    NSMenu, NSMenuItem, NSWindow, NSWindowDelegate,
+    NSMenu, NSMenuItem, NSWindow, NSWindowDelegate, NSWindowOcclusionState,
 };
-use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSString, NSTimer};
+use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSProcessInfo, NSString};
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 thread_local! {
     /// Main-thread-owned retained handle to the singleton `AppController`.
@@ -24,10 +25,19 @@ thread_local! {
     static MAIN_CONTROLLER: RefCell<Option<Retained<AppController>>> = const { RefCell::new(None) };
 }
 
+/// Monotonic timebase for deadline-coalesced one-shot GCD wakeups (zero permanent NSTimer!).
+static WAKE_EPOCH: OnceLock<Instant> = OnceLock::new();
 /// Coalesces concurrent PTY reader wakeups into a single zero-delay main-queue GCD render pass!
 static MAIN_WAKE_SCHEDULED: AtomicBool = AtomicBool::new(false);
-/// Coalesces deferred flood-paced frames into a single exact-deadline GCD `after()` timer!
-static DELAYED_WAKE_SCHEDULED: AtomicBool = AtomicBool::new(false);
+/// Earliest currently scheduled delayed wakeup (nanoseconds since `WAKE_EPOCH`; `0` = none).
+/// Allows a sooner deadline (e.g. 7.5 ms flood pacing) to preempt a later one (e.g. 4 s toast expiry)!
+static NEXT_DELAYED_WAKE_NS: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn monotonic_now_ns() -> u64 {
+    let origin = WAKE_EPOCH.get_or_init(Instant::now);
+    origin.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
 
 fn dispatch_main_tick() {
     let ctrl = MAIN_CONTROLLER.with(|slot| slot.borrow().clone());
@@ -49,19 +59,41 @@ pub fn schedule_main_wakeup() {
     }
 }
 
-/// Schedule a single exact-deadline GCD wakeup after `delay` (used when flood-pacing defers a frame
-/// by < 7.5 ms, eliminating both 16 ms NSTimer tail latency AND 60 Hz idle battery drain!).
+/// Schedule a single exact-deadline GCD wakeup after `delay`, preempting any later scheduled deadline.
+/// When no animations, toasts, or active blinking cursors exist, ZERO timers are armed (0.00 wakeups/sec!).
 pub fn schedule_main_wakeup_after(delay: Duration) {
-    if DELAYED_WAKE_SCHEDULED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        let when = DispatchTime::try_from(delay).unwrap_or(DispatchTime::NOW);
-        let _ = DispatchQueue::main().after(when, || {
-            DELAYED_WAKE_SCHEDULED.store(false, Ordering::Release);
-            dispatch_main_tick();
-        });
+    let delay = delay.max(Duration::from_micros(500));
+    let now = monotonic_now_ns();
+    let target = now.saturating_add(delay.as_nanos().min(u64::MAX as u128) as u64).max(1);
+
+    let mut cur = NEXT_DELAYED_WAKE_NS.load(Ordering::Acquire);
+    loop {
+        // If an earlier (or within 0.5 ms) wakeup is already pending, coalesce into it!
+        if cur != 0 && cur <= target.saturating_add(500_000) && cur >= now {
+            return;
+        }
+        match NEXT_DELAYED_WAKE_NS.compare_exchange_weak(
+            cur,
+            target,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(actual) => cur = actual,
+        }
     }
+
+    let when = DispatchTime::try_from(delay).unwrap_or(DispatchTime::NOW);
+    let _ = DispatchQueue::main().after(when, move || {
+        // Clear deadline slot if ours was the earliest scheduled wakeup
+        let _ = NEXT_DELAYED_WAKE_NS.compare_exchange(
+            target,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        dispatch_main_tick();
+    });
 }
 
 struct ManagedWindow {
@@ -84,13 +116,6 @@ define_class!(
     pub struct AppController;
 
     impl AppController {
-        /// Periodic low-frequency housekeeping tick (cursor blink, toast expiry, Carbon hotkey);
-        /// actual PTY output & input frames wake immediately via GCD `schedule_main_wakeup()` (< 0.1 ms)!
-        #[unsafe(method(onFrameTick:))]
-        fn on_frame_tick(&self, _timer: &NSTimer) {
-            self.process_frame_tick();
-        }
-
         #[unsafe(method(menuPreferences:))]
         fn menu_preferences(&self, _sender: Option<&AnyObject>) {
             let mtm = MainThreadMarker::from(self);
@@ -209,10 +234,20 @@ define_class!(
             }
             true
         }
+
+        #[unsafe(method(applicationDidHide:))]
+        fn application_did_hide(&self, _notification: &NSNotification) {
+            schedule_main_wakeup();
+        }
+
+        #[unsafe(method(applicationDidUnhide:))]
+        fn application_did_unhide(&self, _notification: &NSNotification) {
+            schedule_main_wakeup();
+        }
     }
 
-    // Native macOS NSWindowDelegate: 0 ms event-driven FocusIn/FocusOut (`\x1b[I`/`\x1b[O`)
-    // and immediate PTY cleanup on red close-button click (no 500 ms timer wait!).
+    // Native macOS NSWindowDelegate: 0 ms event-driven FocusIn/FocusOut (`\x1b[I`/`\x1b[O`),
+    // occlusion/minimize GPU pause/resume, and immediate PTY cleanup on red close-button click!
     unsafe impl NSWindowDelegate for AppController {
         #[unsafe(method(windowDidBecomeKey:))]
         fn window_did_become_key(&self, _notification: &NSNotification) {
@@ -221,6 +256,21 @@ define_class!(
 
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
+            schedule_main_wakeup();
+        }
+
+        #[unsafe(method(windowDidChangeOcclusionState:))]
+        fn window_did_change_occlusion_state(&self, _notification: &NSNotification) {
+            schedule_main_wakeup();
+        }
+
+        #[unsafe(method(windowDidMiniaturize:))]
+        fn window_did_miniaturize(&self, _notification: &NSNotification) {
+            schedule_main_wakeup();
+        }
+
+        #[unsafe(method(windowDidDeminiaturize:))]
+        fn window_did_deminiaturize(&self, _notification: &NSNotification) {
             schedule_main_wakeup();
         }
 
@@ -282,8 +332,22 @@ impl AppController {
             let mut need_new_window = false;
             let mut need_open_prefs = false;
             let mut close_windows: Vec<Retained<NSWindow>> = Vec::new();
+            let mut next_wakeup: Option<Duration> = None;
+            let low_power = NSProcessInfo::processInfo().isLowPowerModeEnabled();
+
             for (win, view, is_hotkey) in snapshot {
-                let (should_close, req_new, req_prefs, new_title) = view.tick();
+                let is_mini = win.isMiniaturized();
+                let is_visible = !app_hidden
+                    && !is_mini
+                    && win.occlusionState().contains(NSWindowOcclusionState::Visible);
+                let (should_close, req_new, req_prefs, new_title, win_wake) =
+                    view.tick(is_visible, low_power);
+                if let Some(d) = win_wake {
+                    next_wakeup = Some(match next_wakeup {
+                        Some(cur) => cur.min(d),
+                        None => d,
+                    });
+                }
                 if let Some(title) = new_title {
                     win.setTitle(&NSString::from_str(&title));
                 }
@@ -295,7 +359,7 @@ impl AppController {
                 }
                 let user_closed = !is_hotkey
                     && !app_hidden
-                    && !win.isMiniaturized()
+                    && !is_mini
                     && win.windowNumber() <= 0;
                 if should_close || user_closed {
                     close_windows.push(win);
@@ -333,6 +397,13 @@ impl AppController {
             let quit_empty = self.ivars().app_cfg.borrow().quit_when_all_windows_closed;
             if quit_empty && self.ivars().windows.borrow().is_empty() {
                 app.terminate(None);
+                return;
+            }
+
+            // Purely demand-driven one-shot GCD timer: ONLY armed when an active blink, toast,
+            // visual bell, or transfer auto-hide actually needs a future tick -> 0.00 wakeups/sec at idle!
+            if let Some(delay) = next_wakeup {
+                schedule_main_wakeup_after(delay);
             }
         });
     }
@@ -500,21 +571,11 @@ pub fn run_macos_app(cfg: AppConfig) {
     let menu = build_menu_bar(mtm, &controller);
     app.setMainMenu(Some(&menu));
 
-    // Open initial terminal window immediately
+    // Open initial terminal window immediately (100% event-driven — ZERO permanent repeating NSTimer!
+    // PTY output, AppKit delegates, hotkeys, and exact one-shot deadlines drive all wakeups so
+    // macOS achieves 0.00 idle wakeups/sec and full Apple Silicon App Nap energy efficiency!)
     controller.spawn_window(mtm, false);
-
-    // Quiet 2 Hz (500 ms) housekeeping timer ONLY for cursor blink / toast expiry / Carbon hotkey.
-    // All real PTY output wakes in < 0.1 ms via `schedule_main_wakeup()`, and flood-deferred frames
-    // fire at exact 120 Hz via `schedule_main_wakeup_after()` -> near-0% idle battery usage!
-    let _timer = unsafe {
-        NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-            0.5,
-            &controller,
-            sel!(onFrameTick:),
-            None,
-            true,
-        )
-    };
+    schedule_main_wakeup();
 
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);

@@ -8,7 +8,7 @@ use iterm_render::{
 use iterm_vt::InlineImage;
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::ProtocolObject;
-use objc2_foundation::NSString;
+use objc2_foundation::{NSArray, NSString};
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
     MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary,
@@ -172,10 +172,29 @@ pub struct MetalRenderer {
     frame_idx: usize,
 }
 
+/// Select the most energy-efficient Metal GPU (integrated low-power GPU on dual-GPU Intel MacBooks
+/// so we never wake the 45W discrete GPU for terminal text; unified GPU on Apple Silicon).
+fn select_energy_efficient_metal_device() -> Option<Retained<ProtocolObject<dyn MTLDevice>>> {
+    extern "C-unwind" {
+        fn MTLCopyAllDevices() -> *mut NSArray<ProtocolObject<dyn MTLDevice>>;
+    }
+    let devices = unsafe { Retained::from_raw(MTLCopyAllDevices()) };
+    if let Some(list) = devices {
+        let count = list.count();
+        for i in 0..count {
+            let dev = list.objectAtIndex(i);
+            if dev.isLowPower() && !dev.isHeadless() {
+                return Some(dev);
+            }
+        }
+    }
+    MTLCreateSystemDefaultDevice()
+}
+
 impl MetalRenderer {
     pub fn new(atlas: &GlyphAtlas) -> Result<Self, String> {
-        let device = MTLCreateSystemDefaultDevice()
-            .ok_or_else(|| "MTLCreateSystemDefaultDevice returned nil".to_string())?;
+        let device = select_energy_efficient_metal_device()
+            .ok_or_else(|| "No Metal device available".to_string())?;
         let queue = device
             .newCommandQueue()
             .ok_or_else(|| "newCommandQueue returned nil".to_string())?;

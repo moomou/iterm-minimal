@@ -289,12 +289,15 @@ define_class!(
                 None
             };
             let need_app_tick = st.request_open_prefs || st.request_new_window || st.should_close;
+            let next_wake = st.next_scheduled_wakeup();
             drop(guard);
             if let Some((is_opaque, bg)) = opacity_sync {
                 self.apply_window_opacity(is_opaque, bg);
             }
             if need_app_tick {
                 crate::macos::app::schedule_main_wakeup();
+            } else if let Some(d) = next_wake {
+                crate::macos::app::schedule_main_wakeup_after(d);
             }
         }
 
@@ -1052,26 +1055,38 @@ impl TerminalMetalView {
         (local.x as f32 * scale, local.y as f32 * scale)
     }
 
-    pub fn tick(&self) -> (bool, bool, bool, Option<String>) {
+    pub fn tick(
+        &self,
+        is_visible: bool,
+        low_power: bool,
+    ) -> (bool, bool, bool, Option<String>, Option<std::time::Duration>) {
         let is_key = self.window().is_some_and(|w| w.isKeyWindow());
         let (vp_w, vp_h) = self.viewport_px();
         let mut guard = self.ivars().state.borrow_mut();
         let Some(ref mut st) = *guard else {
-            return (false, false, false, None);
+            return (false, false, false, None, None);
         };
         if st.should_close || st.tabs.is_empty() {
             let req_new = std::mem::take(&mut st.request_new_window);
             let req_prefs = std::mem::take(&mut st.request_open_prefs);
-            return (true, req_new, req_prefs, None);
+            return (true, req_new, req_prefs, None, None);
         }
+        st.set_power_visibility_state(is_visible, low_power);
         st.set_window_focused(is_key);
         let title = st.process_session_events(vp_w, vp_h);
-        if !st.should_close && !st.tabs.is_empty() {
+        if is_visible && !st.should_close && !st.tabs.is_empty() {
             st.render_if_needed(vp_w, vp_h);
         }
+        let next_wake = st.next_scheduled_wakeup();
         let req_new = std::mem::take(&mut st.request_new_window);
         let req_prefs = std::mem::take(&mut st.request_open_prefs);
-        (st.should_close || st.tabs.is_empty(), req_new, req_prefs, title)
+        (
+            st.should_close || st.tabs.is_empty(),
+            req_new,
+            req_prefs,
+            title,
+            next_wake,
+        )
     }
 
     /// Live-apply updated `AppConfig` & profile from the Preferences panel to this window!
@@ -1143,6 +1158,7 @@ impl TerminalMetalView {
         let (vp_w, vp_h) = self.viewport_px();
         let mut need_app_tick = false;
         let mut opacity_sync = None;
+        let mut next_wake = None;
         if let Some(ref mut st) = *self.ivars().state.borrow_mut() {
             st.handle_command(cmd, vp_w, vp_h);
             st.render_if_needed(vp_w, vp_h);
@@ -1150,12 +1166,15 @@ impl TerminalMetalView {
                 opacity_sync = Some((st.profile.transparency <= 0.001, st.profile.colors.background));
             }
             need_app_tick = st.request_open_prefs || st.request_new_window || st.should_close;
+            next_wake = st.next_scheduled_wakeup();
         }
         if let Some((is_opaque, bg)) = opacity_sync {
             self.apply_window_opacity(is_opaque, bg);
         }
         if need_app_tick {
             crate::macos::app::schedule_main_wakeup();
+        } else if let Some(d) = next_wake {
+            crate::macos::app::schedule_main_wakeup_after(d);
         }
     }
 }

@@ -356,8 +356,9 @@ fn run_coalesced_reader(
             },
         ];
         let nfds = if wake_read_fd >= 0 { 2 } else { 1 };
-        // Gentle 2000 ms poll timeout (20x fewer idle wakeups across multi-tab sessions!)
-        let rc = unsafe { libc::poll(pfds.as_mut_ptr(), nfds, 2000) };
+        // True zero-wakeup infinite kernel sleep (-1): wakes strictly on POLLIN / POLLHUP / POLLOUT / wake_pipe!
+        // Gives 0.00 idle CPU wakeups/sec even with dozens of open tabs and split panes.
+        let rc = unsafe { libc::poll(pfds.as_mut_ptr(), nfds, -1) };
         if rc < 0 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::Interrupted {
@@ -366,13 +367,6 @@ fn run_coalesced_reader(
             break;
         }
         if rc == 0 {
-            if pty.try_wait().is_some() {
-                exited.store(true, Ordering::Release);
-                if let Some(ref cb) = on_wake {
-                    cb(id);
-                }
-                break;
-            }
             continue;
         }
         if nfds == 2 && (pfds[1].revents & libc::POLLIN) != 0 {

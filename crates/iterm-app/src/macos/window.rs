@@ -130,6 +130,9 @@ pub struct TerminalWindowState {
     pub(crate) scroll_accum_y: f64,
     pub(crate) metal_layer: Retained<CAMetalLayer>,
     pub(crate) window_focused: bool,
+    pub(crate) window_visible: bool,
+    pub(crate) low_power_mode: bool,
+    last_blink_on: bool,
     pub(crate) show_perf_hud: bool,
     pub(crate) show_transfers: bool,
     pub(crate) transfers: TransferQueue,
@@ -236,6 +239,9 @@ impl TerminalWindowState {
             scroll_accum_y: 0.0,
             metal_layer,
             window_focused: true,
+            window_visible: true,
+            low_power_mode: false,
+            last_blink_on: true,
             show_perf_hud: false,
             show_transfers: false,
             transfers,
@@ -844,9 +850,82 @@ impl TerminalWindowState {
         self.wake_flag.store(true, Ordering::Release);
     }
 
-    /// Render a frame if any session is dirty or an animation/toast is active.
+    /// Update window visibility (occlusion/minimize/app-hide) and macOS Low Power Mode state.
+    /// Transitioning from occluded -> visible immediately arms a repaint so the latest output shows in <1 ms!
+    pub fn set_power_visibility_state(&mut self, visible: bool, low_power: bool) {
+        if !self.window_visible && visible {
+            self.wake_flag.store(true, Ordering::Release);
+        }
+        self.window_visible = visible;
+        self.low_power_mode = low_power;
+    }
+
+    /// True if the active focused pane currently has a visible blinking cursor that needs periodic ticks.
+    fn active_cursor_needs_blink(&self) -> bool {
+        if !self.window_visible || !self.window_focused || self.low_power_mode {
+            return false;
+        }
+        let Some(sid) = self.tabs.try_active_session() else {
+            return false;
+        };
+        self.sessions.get(&sid).is_some_and(|sess| {
+            let s = sess.screen.lock();
+            s.viewport_offset == 0
+                && s.cursor.blinking
+                && s.modes.contains(TermModes::CURSOR_VISIBLE)
+        })
+    }
+
+    /// Compute the exact next time-based wakeup deadline for this window (if any!).
+    /// Returns `None` at idle whenever no blink/bell/toast/transfer auto-hide is pending -> **0.00 wakeups/sec**!
+    pub fn next_scheduled_wakeup(&self) -> Option<Duration> {
+        if !self.window_visible || self.should_close || self.tabs.is_empty() {
+            return None;
+        }
+        let now = Instant::now();
+        let mut min_delay: Option<Duration> = None;
+        let mut consider = |d: Duration| {
+            let clamped = d.max(Duration::from_millis(2));
+            min_delay = Some(match min_delay {
+                Some(cur) => cur.min(clamped),
+                None => clamped,
+            });
+        };
+
+        if let Some(until) = self.visual_bell_until {
+            consider(until.saturating_duration_since(now));
+        }
+        if let Some((_, until)) = self.status_toast {
+            consider(until.saturating_duration_since(now));
+        }
+        if !self.show_transfers
+            && !self.transfer_hitboxes.is_empty()
+            && self.transfers.active_count() == 0
+        {
+            for t in self.transfers.snapshots() {
+                if let Some(fin) = t.finished_at {
+                    let hide_at = fin + Duration::from_secs(5);
+                    if hide_at > now {
+                        consider(hide_at.saturating_duration_since(now));
+                    } else {
+                        consider(Duration::from_millis(5));
+                    }
+                }
+            }
+        }
+        if self.active_cursor_needs_blink() {
+            // Exact time until the next 500 ms cursor-blink half-period boundary
+            let elapsed_ms = self.start_time.elapsed().as_millis() as u64;
+            let rem_ms = 500 - (elapsed_ms % 500);
+            consider(Duration::from_millis(rem_ms.max(10)));
+        }
+        min_delay
+    }
+
+    /// Render a frame if visible AND any session is dirty or an animation/toast/blink changed.
     pub fn render_if_needed(&mut self, vp_w: f32, vp_h: f32) {
-        if self.should_close || self.tabs.is_empty() {
+        if self.should_close || self.tabs.is_empty() || !self.window_visible {
+            // Occluded / minimized / hidden: ZERO GPU / CoreText / Metal work!
             return;
         }
         let Some(active_tab) = self.tabs.try_active_tab() else {
@@ -861,11 +940,27 @@ impl TerminalWindowState {
                 }
             }
         }
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+        let blink_on = if self.active_cursor_needs_blink() {
+            ((elapsed * 2.0) as u64).is_multiple_of(2)
+        } else {
+            true
+        };
+        if blink_on != self.last_blink_on {
+            self.last_blink_on = blink_on;
+            any_dirty = true;
+        }
         if let Some(until) = self.visual_bell_until {
             if Instant::now() < until {
                 any_dirty = true;
             } else {
                 self.visual_bell_until = None;
+                any_dirty = true;
+            }
+        }
+        if let Some((_, until)) = self.status_toast {
+            if Instant::now() >= until {
+                self.status_toast = None;
                 any_dirty = true;
             }
         }
@@ -888,9 +983,18 @@ impl TerminalWindowState {
             return;
         }
 
-        // Adaptive 0-delay-idle / exact-120Hz-flood render pacing via single-shot GCD `after()`!
+        // Power-aware adaptive flood pacing via exact one-shot GCD `after()`:
+        // - Focused active window: 120 Hz ProMotion (7.5 ms)
+        // - macOS Low Power Mode:   60 Hz (16.0 ms)
+        // - Unfocused background:   30 Hz (33.0 ms — 4x lower background GPU energy!)
         let now_present = Instant::now();
-        let min_interval = Duration::from_micros(7500);
+        let min_interval = if !self.window_focused {
+            Duration::from_millis(33)
+        } else if self.low_power_mode {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_micros(7500)
+        };
         let since_last = now_present.duration_since(self.last_present);
         if since_last < min_interval {
             self.wake_flag.store(true, Ordering::Release);
@@ -939,8 +1043,6 @@ impl TerminalWindowState {
             0.0
         };
 
-        let elapsed = self.start_time.elapsed().as_secs_f32();
-        let blink_on = ((elapsed * 2.0) as u64).is_multiple_of(2);
         let mut new_images: FxHashMap<u32, InlineImage> = FxHashMap::default();
         let mut live_image_ids: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
 

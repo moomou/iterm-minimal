@@ -551,8 +551,15 @@ impl TerminalWindowState {
         if self.show_perf_hud {
             let m = self.ui_shaper.metrics();
             let (gpu_last, gpu_ewma, gpu_frames) = self.renderer.gpu_timing_ms();
+            let pwr = if !self.window_focused {
+                "30Hz BG"
+            } else if self.low_power_mode {
+                "60Hz LPM"
+            } else {
+                "120Hz"
+            };
             let hud = format!(
-                "PERF | CPU {:.2}ms | GPU {:.2}ms (avg {:.2}ms) | Cache {}/{} | Atlas {} | #{}",
+                "PERF [{pwr}] | CPU {:.2}ms | GPU {:.2}ms (avg {:.2}ms) | Cache {}/{} | Atlas {} | #{}",
                 self.last_cpu_prep_ms,
                 gpu_last,
                 gpu_ewma,
