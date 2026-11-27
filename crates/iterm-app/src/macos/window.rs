@@ -132,6 +132,8 @@ pub struct TerminalWindowState {
     pub(crate) window_focused: bool,
     pub(crate) window_visible: bool,
     pub(crate) low_power_mode: bool,
+    pub(crate) reduce_transparency: bool,
+    pub(crate) manual_transparency_override: Option<bool>,
     last_blink_on: bool,
     pub(crate) show_perf_hud: bool,
     pub(crate) show_transfers: bool,
@@ -150,11 +152,22 @@ pub struct TerminalWindowState {
 impl TerminalWindowState {
     pub fn new(
         app_cfg: AppConfig,
-        profile: Profile,
+        mut profile: Profile,
         scale_factor: f32,
         is_hotkey_window: bool,
+        reduce_transparency: bool,
         metal_layer: Retained<CAMetalLayer>,
     ) -> Result<Self, String> {
+        let saved_transparency = if profile.transparency > 0.001 {
+            profile.transparency
+        } else {
+            0.24
+        };
+        // Honor macOS Accessibility -> Display -> Reduce Transparency so WindowServer uses
+        // opaque direct-scanout instead of alpha-blending + ASEProcessing scaling on every tick!
+        if reduce_transparency {
+            profile.transparency = 0.0;
+        }
         let atlas = Arc::new(GlyphAtlas::new_dual(4096, 4096, 1024, 1024));
         let renderer = MetalRenderer::new(&atlas)?;
         renderer.configure_layer(&metal_layer, profile.transparency <= 0.001);
@@ -163,13 +176,12 @@ impl TerminalWindowState {
         let ui_shaper = CachedShaper::new(make_ui_chrome_shaper(scale_factor));
         let metrics = shaper.metrics();
         let wake_flag = Arc::new(AtomicBool::new(true));
-        let wake_cb: WakeCallback = {
-            let wf = Arc::clone(&wake_flag);
-            Arc::new(move |_| {
-                wf.store(true, Ordering::Release);
-                schedule_main_wakeup();
-            })
-        };
+        // NOTE: PTY reader already sets per-session `sess.dirty = true` before invoking `wake_cb`!
+        // Do NOT set window-wide `wake_flag = true` here so noisy background tabs never force
+        // Metal GPU / WindowServer repaints on the active tab!
+        let wake_cb: WakeCallback = Arc::new(|_| {
+            schedule_main_wakeup();
+        });
 
         let init_size = PtySize {
             cols: profile.columns,
@@ -199,12 +211,6 @@ impl TerminalWindowState {
                 wf.store(true, Ordering::Release);
                 schedule_main_wakeup();
             })
-        };
-
-        let saved_transparency = if profile.transparency > 0.001 {
-            profile.transparency
-        } else {
-            0.24
         };
 
         Ok(Self {
@@ -241,6 +247,8 @@ impl TerminalWindowState {
             window_focused: true,
             window_visible: true,
             low_power_mode: false,
+            reduce_transparency,
+            manual_transparency_override: None,
             last_blink_on: true,
             show_perf_hud: false,
             show_transfers: false,
@@ -258,9 +266,7 @@ impl TerminalWindowState {
     }
 
     fn make_wake_cb(&self) -> WakeCallback {
-        let wf = Arc::clone(&self.wake_flag);
-        Arc::new(move |_| {
-            wf.store(true, Ordering::Release);
+        Arc::new(|_| {
             schedule_main_wakeup();
         })
     }
@@ -388,6 +394,7 @@ impl TerminalWindowState {
                 match ev {
                     TerminalEvent::TitleChanged(title) => {
                         self.tabs.update_session_title(sid, title.clone());
+                        self.wake_flag.store(true, Ordering::Release);
                         if sid == active_sid {
                             new_title = Some(title);
                         }
@@ -778,8 +785,10 @@ impl TerminalWindowState {
                 if self.profile.transparency > 0.001 {
                     self.saved_transparency = self.profile.transparency;
                     self.profile.transparency = 0.0;
+                    self.manual_transparency_override = Some(false);
                 } else {
                     self.profile.transparency = self.saved_transparency.clamp(0.05, 0.90);
+                    self.manual_transparency_override = Some(true);
                 }
                 let is_opaque = self.profile.transparency <= 0.001;
                 self.renderer.configure_layer(&self.metal_layer, is_opaque);
@@ -856,14 +865,42 @@ impl TerminalWindowState {
         self.wake_flag.store(true, Ordering::Release);
     }
 
-    /// Update window visibility (occlusion/minimize/app-hide) and macOS Low Power Mode state.
-    /// Transitioning from occluded -> visible immediately arms a repaint so the latest output shows in <1 ms!
-    pub fn set_power_visibility_state(&mut self, visible: bool, low_power: bool) {
+    /// Update window visibility (occlusion/minimize/app-hide), macOS Low Power Mode,
+    /// and macOS Accessibility `reduceTransparency` state.
+    pub fn set_power_visibility_state(
+        &mut self,
+        visible: bool,
+        low_power: bool,
+        reduce_transparency: bool,
+    ) {
         if !self.window_visible && visible {
             self.wake_flag.store(true, Ordering::Release);
         }
         self.window_visible = visible;
         self.low_power_mode = low_power;
+        if self.reduce_transparency != reduce_transparency {
+            self.reduce_transparency = reduce_transparency;
+            // Respect live System Settings -> Reduce Transparency toggle (clears manual override)
+            self.manual_transparency_override = None;
+            let target = if reduce_transparency {
+                0.0
+            } else {
+                self.app_cfg.default_profile().transparency
+            };
+            if (self.profile.transparency - target).abs() > 0.001 {
+                if self.profile.transparency > 0.001 {
+                    self.saved_transparency = self.profile.transparency;
+                }
+                self.profile.transparency = target;
+                let is_opaque = self.profile.transparency <= 0.001;
+                self.renderer.configure_layer(&self.metal_layer, is_opaque);
+                for rc in self.render_caches.values_mut() {
+                    rc.invalidate_all();
+                }
+                self.window_opacity_dirty = true;
+                self.wake_flag.store(true, Ordering::Release);
+            }
+        }
     }
 
     /// True if the active focused pane currently has a visible blinking cursor that needs periodic ticks.
@@ -937,12 +974,13 @@ impl TerminalWindowState {
         let Some(active_tab) = self.tabs.try_active_tab() else {
             return;
         };
-        let mut any_dirty = self.wake_flag.swap(false, Ordering::AcqRel);
+        let mut ui_dirty = self.wake_flag.swap(false, Ordering::AcqRel);
+        let mut pty_dirty = false;
         let active_tab_sessions = active_tab.panes.sessions();
         for &sid in &active_tab_sessions {
             if let Some(sess) = self.sessions.get(&sid) {
                 if sess.take_dirty() {
-                    any_dirty = true;
+                    pty_dirty = true;
                 }
             }
         }
@@ -954,24 +992,25 @@ impl TerminalWindowState {
         };
         if blink_on != self.last_blink_on {
             self.last_blink_on = blink_on;
-            any_dirty = true;
+            ui_dirty = true;
         }
         if let Some(until) = self.visual_bell_until {
             if Instant::now() < until {
-                any_dirty = true;
+                ui_dirty = true;
             } else {
                 self.visual_bell_until = None;
-                any_dirty = true;
+                ui_dirty = true;
             }
         }
         if let Some((_, until)) = self.status_toast {
             if Instant::now() >= until {
                 self.status_toast = None;
-                any_dirty = true;
+                ui_dirty = true;
             }
         }
         // Auto-hide the Transfer Queue card cleanly 5 seconds after the last transfer finishes
-        if !any_dirty
+        if !ui_dirty
+            && !pty_dirty
             && !self.show_transfers
             && !self.transfer_hitboxes.is_empty()
             && self.transfers.active_count() == 0
@@ -982,10 +1021,10 @@ impl TerminalWindowState {
                     .is_some_and(|fin| now.saturating_duration_since(fin) < Duration::from_secs(5))
             });
             if !any_recent {
-                any_dirty = true;
+                ui_dirty = true;
             }
         }
-        if !any_dirty {
+        if !ui_dirty && !pty_dirty {
             return;
         }
 
@@ -1055,24 +1094,34 @@ impl TerminalWindowState {
         // Phase A: Capture lightweight lock-free snapshots under `screen.lock()` (~10 µs/pane),
         // then drop the lock IMMEDIATELY so `pty-reader` never contends with CoreText / Metal!
         let cpu_prep_start = Instant::now();
+        let mut any_snap_changed = false;
         for (sid, _) in &panes {
             let Some(sess) = self.sessions.get(sid) else {
                 continue;
             };
             let snap = self.snapshots.entry(*sid).or_default();
             let screen = sess.screen.lock();
-            snap.capture(&screen);
+            if snap.capture(&screen) {
+                any_snap_changed = true;
+            }
             if !screen.images.is_empty() {
                 for (&img_id, img) in &screen.images {
                     live_image_ids.insert(img_id);
                     if !self.renderer.has_image_texture(img_id) {
                         new_images.insert(img_id, img.clone());
+                        any_snap_changed = true;
                     }
                 }
             }
         }
         // Release GPU textures for any inline images cleared/GC'd from sessions
         self.renderer.retain_image_textures(&live_image_ids);
+
+        // If PTY bytes arrived but changed ZERO visible cells/cursor/modes (e.g. off-screen scrollback
+        // while scrolled up, no-op CSI/OSC), skip Metal & WindowServer compositing completely!
+        if !ui_dirty && !any_snap_changed {
+            return;
+        }
 
         // Phase B: Shape text, lookup/rasterize glyphs, and build Metal batches 100% LOCK-FREE!
         // Retry once cleanly if either glyph atlas plane resets mid-frame so rows 0..K never sample blank pixels!
@@ -1127,8 +1176,14 @@ impl TerminalWindowState {
         self.last_cpu_prep_ms = cpu_prep_start.elapsed().as_secs_f32() * 1000.0;
         self.render_window_chrome(vp_w, vp_h, &panes, active_sid);
 
-        // Clear to transparent black so each pane's `pane_bg` quad renders exact transparency ONCE
-        // (eliminating double-blended opacity mismatches between panes and colored htop cells!)
+        // Opaque mode clears to solid bg (alpha = 1.0) so WindowServer uses opaque direct-scanout
+        // without alpha blending; transparent mode clears to [0,0,0,0] so pane_bg blends exactly once!
+        let clear_rgba = if self.profile.transparency <= 0.001 {
+            let bg = self.profile.colors.background;
+            [bg.r as f64, bg.g as f64, bg.b as f64, 1.0]
+        } else {
+            [0.0, 0.0, 0.0, 0.0]
+        };
         self.last_present = Instant::now();
         let presented = self.renderer.render_frame(
             &self.metal_layer,
@@ -1139,7 +1194,7 @@ impl TerminalWindowState {
             vp_h,
             self.scale_factor,
             elapsed,
-            [0.0, 0.0, 0.0, 0.0],
+            clear_rgba,
         );
         if !presented {
             self.wake_flag.store(true, Ordering::Release);

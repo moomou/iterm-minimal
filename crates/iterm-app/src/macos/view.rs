@@ -18,7 +18,7 @@ use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThr
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSDragOperation, NSDraggingInfo, NSEvent, NSMenu, NSMenuItem,
     NSPasteboardTypeFileURL, NSTextInputClient, NSView, NSWindow, NSWindowCollectionBehavior,
-    NSWindowStyleMask, NSWindowTitleVisibility,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSPoint, NSRange,
@@ -999,6 +999,7 @@ impl TerminalMetalView {
         profile: Profile,
         scale_factor: f32,
         is_hotkey_window: bool,
+        reduce_transparency: bool,
     ) -> Result<Retained<Self>, String> {
         let this = mtm.alloc::<Self>().set_ivars(TerminalViewIvars {
             state: RefCell::new(None),
@@ -1021,6 +1022,7 @@ impl TerminalMetalView {
             profile,
             scale_factor,
             is_hotkey_window,
+            reduce_transparency,
             metal_layer,
         )?;
         *view.ivars().state.borrow_mut() = Some(state);
@@ -1059,49 +1061,66 @@ impl TerminalMetalView {
         &self,
         is_visible: bool,
         low_power: bool,
+        reduce_transparency: bool,
     ) -> (bool, bool, bool, Option<String>, Option<std::time::Duration>) {
         let is_key = self.window().is_some_and(|w| w.isKeyWindow());
         let (vp_w, vp_h) = self.viewport_px();
-        let mut guard = self.ivars().state.borrow_mut();
-        let Some(ref mut st) = *guard else {
-            return (false, false, false, None, None);
-        };
-        if st.should_close || st.tabs.is_empty() {
+        let mut opacity_sync = None;
+        let res = {
+            let mut guard = self.ivars().state.borrow_mut();
+            let Some(ref mut st) = *guard else {
+                return (false, false, false, None, None);
+            };
+            if st.should_close || st.tabs.is_empty() {
+                let req_new = std::mem::take(&mut st.request_new_window);
+                let req_prefs = std::mem::take(&mut st.request_open_prefs);
+                return (true, req_new, req_prefs, None, None);
+            }
+            st.set_power_visibility_state(is_visible, low_power, reduce_transparency);
+            st.set_window_focused(is_key);
+            if std::mem::take(&mut st.window_opacity_dirty) {
+                opacity_sync = Some((st.profile.transparency <= 0.001, st.profile.colors.background));
+            }
+            let title = st.process_session_events(vp_w, vp_h);
+            if is_visible && !st.should_close && !st.tabs.is_empty() {
+                st.render_if_needed(vp_w, vp_h);
+            }
+            let next_wake = st.next_scheduled_wakeup();
             let req_new = std::mem::take(&mut st.request_new_window);
             let req_prefs = std::mem::take(&mut st.request_open_prefs);
-            return (true, req_new, req_prefs, None, None);
+            (
+                st.should_close || st.tabs.is_empty(),
+                req_new,
+                req_prefs,
+                title,
+                next_wake,
+            )
+        };
+        if let Some((is_opaque, bg)) = opacity_sync {
+            self.apply_window_opacity(is_opaque, bg);
         }
-        st.set_power_visibility_state(is_visible, low_power);
-        st.set_window_focused(is_key);
-        let title = st.process_session_events(vp_w, vp_h);
-        if is_visible && !st.should_close && !st.tabs.is_empty() {
-            st.render_if_needed(vp_w, vp_h);
-        }
-        let next_wake = st.next_scheduled_wakeup();
-        let req_new = std::mem::take(&mut st.request_new_window);
-        let req_prefs = std::mem::take(&mut st.request_open_prefs);
-        (
-            st.should_close || st.tabs.is_empty(),
-            req_new,
-            req_prefs,
-            title,
-            next_wake,
-        )
+        res
     }
 
     /// Live-apply updated `AppConfig` & profile from the Preferences panel to this window!
     pub fn apply_config_update(&self, new_cfg: AppConfig) {
+        let reduce_transparency = NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency();
         let (vp_w, vp_h) = self.viewport_px();
         let mut guard = self.ivars().state.borrow_mut();
         let Some(ref mut st) = *guard else {
             return;
         };
-        let new_prof = new_cfg.default_profile().clone();
-        st.app_cfg = new_cfg;
-        st.profile = new_prof.clone();
+        let mut new_prof = new_cfg.default_profile().clone();
         if new_prof.transparency > 0.001 {
             st.saved_transparency = new_prof.transparency;
         }
+        st.reduce_transparency = reduce_transparency;
+        st.manual_transparency_override = None;
+        if reduce_transparency {
+            new_prof.transparency = 0.0;
+        }
+        st.app_cfg = new_cfg;
+        st.profile = new_prof.clone();
         st.font_size_delta = 0.0;
         st.smart_selector = SmartSelector::new(&new_prof.smart_selection_rules);
         st.renderer
@@ -1216,7 +1235,8 @@ pub fn create_terminal_window(
     // CRITICAL: NSWindow defaults to isReleasedWhenClosed = true, which double-releases
     // when Retained<NSWindow> also drops (causing SIGSEGV in AutoreleasePoolPage::releaseUntil!).
     unsafe { window.setReleasedWhenClosed(false) };
-    let is_opaque = profile.transparency <= 0.001;
+    let reduce_transparency = NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency();
+    let is_opaque = reduce_transparency || profile.transparency <= 0.001;
     window.setOpaque(is_opaque);
     if is_opaque {
         let bg = profile.colors.background;
@@ -1241,7 +1261,15 @@ pub fn create_terminal_window(
 
     let scale = window.backingScaleFactor() as f32;
     let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w_pt, h_pt));
-    let view = TerminalMetalView::new(mtm, content_rect, app_cfg, profile, scale, is_hotkey_window)?;
+    let view = TerminalMetalView::new(
+        mtm,
+        content_rect,
+        app_cfg,
+        profile,
+        scale,
+        is_hotkey_window,
+        reduce_transparency,
+    )?;
     window.setContentView(Some(&view));
     let _ = window.makeFirstResponder(Some(&view));
     window.center();

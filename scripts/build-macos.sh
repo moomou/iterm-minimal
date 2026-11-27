@@ -53,9 +53,9 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.19</string>
+  <string>0.1.20</string>
   <key>CFBundleVersion</key>
-  <string>19</string>
+  <string>20</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>

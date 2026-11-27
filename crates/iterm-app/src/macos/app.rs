@@ -11,7 +11,8 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSEventModifierFlags,
-    NSMenu, NSMenuItem, NSWindow, NSWindowDelegate, NSWindowOcclusionState,
+    NSMenu, NSMenuItem, NSWindow, NSWindowDelegate, NSWindowOcclusionState, NSWorkspace,
+    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSProcessInfo, NSString};
 use std::cell::RefCell;
@@ -217,6 +218,11 @@ define_class!(
         fn menu_toggle_perf_hud(&self, _sender: Option<&AnyObject>) {
             self.send_to_key_window(UiCommand::TogglePerfHud);
         }
+
+        #[unsafe(method(onAccessibilityDisplayChanged:))]
+        fn on_accessibility_display_changed(&self, _notification: &NSNotification) {
+            schedule_main_wakeup();
+        }
     }
 
     unsafe impl NSObjectProtocol for AppController {}
@@ -334,6 +340,8 @@ impl AppController {
             let mut close_windows: Vec<Retained<NSWindow>> = Vec::new();
             let mut next_wakeup: Option<Duration> = None;
             let low_power = NSProcessInfo::processInfo().isLowPowerModeEnabled();
+            let reduce_transparency =
+                NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency();
 
             for (win, view, is_hotkey) in snapshot {
                 let is_mini = win.isMiniaturized();
@@ -341,7 +349,7 @@ impl AppController {
                     && !is_mini
                     && win.occlusionState().contains(NSWindowOcclusionState::Visible);
                 let (should_close, req_new, req_prefs, new_title, win_wake) =
-                    view.tick(is_visible, low_power);
+                    view.tick(is_visible, low_power, reduce_transparency);
                 if let Some(d) = win_wake {
                     next_wakeup = Some(match next_wakeup {
                         Some(cur) => cur.min(d),
@@ -591,6 +599,16 @@ pub fn run_macos_app(cfg: AppConfig) {
     let controller = AppController::new(mtm, cfg);
     MAIN_CONTROLLER.with(|slot| *slot.borrow_mut() = Some(controller.clone()));
     app.setDelegate(Some(ProtocolObject::from_ref(&*controller)));
+    // Observe live macOS System Settings -> Accessibility -> Reduce Transparency toggles!
+    unsafe {
+        let ws_nc = NSWorkspace::sharedWorkspace().notificationCenter();
+        ws_nc.addObserver_selector_name_object(
+            &controller,
+            sel!(onAccessibilityDisplayChanged:),
+            Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+            None,
+        );
+    }
     let menu = build_menu_bar(mtm, &controller);
     app.setMainMenu(Some(&menu));
 

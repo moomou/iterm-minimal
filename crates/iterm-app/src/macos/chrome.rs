@@ -81,7 +81,11 @@ impl TerminalWindowState {
         let tab_h = self.tab_bar_height_px();
         if tab_h > 0.0 {
             let bg = self.profile.colors.background;
-            let bar_alpha = (1.0 - self.profile.transparency * 0.65).clamp(0.4, 0.98);
+            let bar_alpha = if self.profile.transparency <= 0.001 {
+                1.0
+            } else {
+                (1.0 - self.profile.transparency * 0.65).clamp(0.4, 0.98)
+            };
             self.batches.overlay_quads.push(QuadInstance {
                 rect: [0.0, 0.0, vp_w, tab_h],
                 color: [
@@ -558,8 +562,13 @@ impl TerminalWindowState {
             } else {
                 "120Hz"
             };
+            let surf = if self.profile.transparency <= 0.001 {
+                "Opaque"
+            } else {
+                "Alpha"
+            };
             let hud = format!(
-                "PERF [{pwr}] | CPU {:.2}ms | GPU {:.2}ms (avg {:.2}ms) | Cache {}/{} | Atlas {} | #{}",
+                "PERF [{pwr} {surf}] | CPU {:.2}ms | GPU {:.2}ms (avg {:.2}ms) | Cache {}/{} | Atlas {} | #{}",
                 self.last_cpu_prep_ms,
                 gpu_last,
                 gpu_ewma,

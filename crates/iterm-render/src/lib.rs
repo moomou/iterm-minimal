@@ -231,4 +231,19 @@ mod tests {
         // Out-of-bounds underline cursor at col 19 (x=228 > pane_w=100) must be cleanly clipped out!
         assert!(batches.overlay_quads.is_empty());
     }
+
+    #[test]
+    fn pane_snapshot_capture_reports_changed_only_on_visible_mutations() {
+        let mut screen = TerminalScreen::new(40, 10, 100);
+        screen.feed(b"hello world");
+        let mut snap = PaneSnapshot::default();
+        assert!(snap.capture(&screen), "first capture must report changed");
+        assert!(!snap.capture(&screen), "identical second capture must report unchanged (0 GPU frames)");
+        // No-op SGR reset without printing or moving cursor -> still unchanged!
+        screen.feed(b"\x1b[0m");
+        assert!(!snap.capture(&screen));
+        // Printing a spinner tick mutates 1 row -> changed!
+        screen.feed(b"\r\xe2\xa0\x8b");
+        assert!(snap.capture(&screen));
+    }
 }

@@ -73,10 +73,23 @@ pub struct PaneSnapshot {
 }
 
 impl PaneSnapshot {
-    pub fn capture(&mut self, screen: &TerminalScreen) {
+    /// Capture visible pane state incrementally under `screen.lock()`.
+    /// Returns `true` if any visible cell, cursor, mode, selection, or search match actually changed
+    /// since the previous frame (allowing zero-GPU skip on no-op PTY bursts!).
+    pub fn capture(&mut self, screen: &TerminalScreen) -> bool {
         let rows = screen.rows();
         let cols = screen.cols();
         let dims_changed = self.cols != cols || self.rows != rows;
+        let mut changed = dims_changed
+            || self.viewport_offset != screen.viewport_offset
+            || self.cursor.col != screen.cursor.col
+            || self.cursor.row != screen.cursor.row
+            || self.cursor.style != screen.cursor.style
+            || self.cursor.blinking != screen.cursor.blinking
+            || self.modes != screen.modes
+            || self.selection != screen.selection
+            || self.active_search_match != screen.active_search_match;
+
         self.cols = cols;
         self.rows = rows;
         self.viewport_offset = screen.viewport_offset;
@@ -99,6 +112,7 @@ impl PaneSnapshot {
 
         let top_abs = screen.visible_abs_line(0);
         let end_abs = top_abs + rows as u64;
+        let prev_search_len = self.search_matches.len();
         self.search_matches.clear();
         if !screen.search_matches.is_empty() {
             for m in &screen.search_matches {
@@ -107,9 +121,15 @@ impl PaneSnapshot {
                 }
             }
         }
+        if prev_search_len != self.search_matches.len() || !self.search_matches.is_empty() {
+            changed = true;
+        }
 
         for vis_row in 0..rows {
             let abs_line = screen.visible_abs_line(vis_row);
+            if self.row_abs_lines[vis_row] != abs_line {
+                changed = true;
+            }
             self.row_abs_lines[vis_row] = abs_line;
             let (src_cells, row_gen, _, _, _) =
                 screen.read_visible_row(vis_row, &mut self.scratch_row);
@@ -118,6 +138,7 @@ impl PaneSnapshot {
             if !dims_changed && row_gen != 0 && self.row_gens[vis_row] == row_gen {
                 continue;
             }
+            changed = true;
             self.row_gens[vis_row] = row_gen;
 
             if self.row_has_extras[vis_row] {
@@ -162,6 +183,7 @@ impl PaneSnapshot {
             }
             self.row_has_extras[vis_row] = any_extra;
         }
+        changed
     }
 
     #[inline]
