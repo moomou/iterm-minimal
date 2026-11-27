@@ -61,17 +61,27 @@ A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-
 
 Download from GitHub Releases (`https://github.com/moomou/jterm/releases`):
 
-- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.21-macos-universal.zip` (or `.tar.gz`)
+- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.23-macos-universal.zip` (or `.tar.gz`)
   ```bash
-  unzip JTerm-v0.1.21-macos-universal.zip -d /Applications/
+  unzip JTerm-v0.1.23-macos-universal.zip -d /Applications/
   xattr -dr com.apple.quarantine /Applications/JTerm.app
   open /Applications/JTerm.app
   ```
-- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.21-linux-x86_64.tar.gz`
+- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.23-linux-x86_64.tar.gz`
   ```bash
-  tar -xzf jterm-v0.1.21-linux-x86_64.tar.gz
-  ./jterm-v0.1.21-linux-x86_64/jterm --benchmark
+  tar -xzf jterm-v0.1.23-linux-x86_64.tar.gz
+  ./jterm-v0.1.23-linux-x86_64/jterm --benchmark
   ```
+
+### macOS Privacy & TCC Permissions (Screen Recording, Accessibility, etc.)
+
+`JTerm.app` ships with full terminal `NS*UsageDescription` declarations in `Info.plist` and a sealed `.app` bundle code signature (`dev.moomou.jterm` + `Contents/_CodeSignature/CodeResources`) so child CLI tools cleanly attribute TCC permission prompts to **JTerm**. You can also trigger or check Screen Recording access directly from **JTerm -> Request Screen Recording Access…**.
+
+Because public builds use an ad-hoc signature (no Apple Developer Team ID), macOS TCC ties ad-hoc grants to each build's CDHash and may require re-granting after an update. To keep Screen Recording / Accessibility grants permanently across upgrades on your Mac, run our helper once (and after future updates) to sign with a persistent local Keychain certificate:
+
+```bash
+./scripts/sign-local-macos.sh /Applications/JTerm.app
+```
 
 ## Key Shortcuts (macOS)
 
@@ -79,6 +89,7 @@ Download from GitHub Releases (`https://github.com/moomou/jterm/releases`):
 | --- | --- |
 | `Cmd+T` / `Cmd+W` | New tab / close pane or tab |
 | `Cmd+D` / `Cmd+Shift+D` | Split vertically / split horizontally |
+| `Cmd+M` / `Cmd+H` | Minimize window (`Cmd+Opt+M` minimizes all) / Hide JTerm |
 | `Cmd+Shift+Enter` | Maximize / restore active pane |
 | `Cmd+Shift+[` / `Cmd+Shift+]` | Previous / next tab (`Cmd+1..8` jump by index, `Cmd+9` jumps to last tab) |
 | `Cmd+U` | Toggle window transparency ON/OFF |

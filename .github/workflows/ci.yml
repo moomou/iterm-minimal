@@ -24,3 +24,13 @@ jobs:
       - run: cargo test --workspace
       - run: cargo build --release --bin jterm
       - run: ./target/release/jterm --version
+      - name: Verify sealed JTerm.app Info.plist and macOS codesign
+        run: |
+          mkdir -p /tmp/JTerm.app/Contents/MacOS /tmp/JTerm.app/Contents/Resources
+          cp target/release/jterm /tmp/JTerm.app/Contents/MacOS/jterm
+          cp assets/AppIcon.icns /tmp/JTerm.app/Contents/Resources/AppIcon.icns
+          awk '/^cat > "\$\{APP_DIR\}\/Contents\/Info\.plist"/{flag=1;next}/^PLIST$/{flag=0}flag' scripts/build-macos.sh > /tmp/JTerm.app/Contents/Info.plist
+          plutil -lint /tmp/JTerm.app/Contents/Info.plist
+          codesign --force --deep --sign - --identifier dev.moomou.jterm /tmp/JTerm.app
+          codesign --verify --deep --strict --verbose=4 /tmp/JTerm.app
+          codesign -dvvv /tmp/JTerm.app 2>&1 | grep -E 'Identifier=|Signature=|Info\.plist|Sealed Resources'

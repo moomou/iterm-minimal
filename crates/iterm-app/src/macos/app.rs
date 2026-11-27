@@ -20,6 +20,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
 thread_local! {
     /// Main-thread-owned retained handle to the singleton `AppController`.
     /// Eliminates raw pointer casts and guarantees lifetime safety across GCD main-queue callbacks.
@@ -122,6 +128,32 @@ define_class!(
             let mtm = MainThreadMarker::from(self);
             let cfg = self.ivars().app_cfg.borrow().clone();
             self.ivars().prefs.show(mtm, &cfg);
+        }
+
+        #[unsafe(method(menuRequestScreenRecording:))]
+        fn menu_request_screen_recording(&self, _sender: Option<&AnyObject>) {
+            let granted = unsafe { CGPreflightScreenCaptureAccess() };
+            let msg = if granted {
+                "Screen Recording permission is already granted for JTerm".to_string()
+            } else {
+                let now_granted = unsafe { CGRequestScreenCaptureAccess() };
+                if now_granted {
+                    "Screen Recording permission granted for JTerm".to_string()
+                } else {
+                    "Screen Recording requested — enable JTerm in System Settings & restart"
+                        .to_string()
+                }
+            };
+            let view = {
+                let wins = self.ivars().windows.borrow();
+                wins.iter()
+                    .find(|w| w.window.isKeyWindow())
+                    .or_else(|| wins.first())
+                    .map(|mw| mw.view.clone())
+            };
+            if let Some(v) = view {
+                v.show_toast(msg);
+            }
         }
 
         #[unsafe(method(menuNewWindow:))]
@@ -227,7 +259,8 @@ define_class!(
 
     unsafe impl NSObjectProtocol for AppController {}
 
-    // Native macOS NSApplicationDelegate: clicking Dock icon when no windows open spawns a fresh window!
+    // Native macOS NSApplicationDelegate: clicking Dock icon deminiaturizes minimized windows,
+    // or spawns a fresh window when no windows exist!
     unsafe impl NSApplicationDelegate for AppController {
         #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
         fn application_should_handle_reopen(
@@ -236,7 +269,22 @@ define_class!(
             has_visible_windows: bool,
         ) -> bool {
             if !has_visible_windows {
-                self.spawn_window(MainThreadMarker::from(self), false);
+                let minimized: Vec<Retained<NSWindow>> = self
+                    .ivars()
+                    .windows
+                    .borrow()
+                    .iter()
+                    .filter(|mw| mw.window.isMiniaturized())
+                    .map(|mw| mw.window.clone())
+                    .collect();
+                if !minimized.is_empty() {
+                    for win in minimized {
+                        win.deminiaturize(None);
+                    }
+                    schedule_main_wakeup();
+                } else if self.ivars().windows.borrow().is_empty() {
+                    self.spawn_window(MainThreadMarker::from(self), false);
+                }
             }
             true
         }
@@ -519,7 +567,10 @@ impl AppController {
     }
 }
 
-fn build_menu_bar(mtm: MainThreadMarker, target: &AppController) -> Retained<NSMenu> {
+fn build_menu_bar(
+    mtm: MainThreadMarker,
+    target: &AppController,
+) -> (Retained<NSMenu>, Retained<NSMenu>) {
     let main_menu = NSMenu::new(mtm);
 
     let add_submenu = |title: &str| -> Retained<NSMenu> {
@@ -551,11 +602,40 @@ fn build_menu_bar(mtm: MainThreadMarker, target: &AppController) -> Retained<NSM
 
     let cmd = NSEventModifierFlags::Command;
     let cmd_shift = NSEventModifierFlags::Command | NSEventModifierFlags::Shift;
+    let cmd_opt = NSEventModifierFlags::Command | NSEventModifierFlags::Option;
+    let ctrl_cmd = NSEventModifierFlags::Control | NSEventModifierFlags::Command;
+    let none = NSEventModifierFlags::empty();
     let tgt: Option<&AnyObject> = Some(target);
 
     // App menu
     let app_menu = add_submenu("JTerm");
     add_item(&app_menu, "Settings…", sel!(menuPreferences:), ",", cmd, tgt);
+    add_item(
+        &app_menu,
+        "Request Screen Recording Access…",
+        sel!(menuRequestScreenRecording:),
+        "",
+        none,
+        tgt,
+    );
+    app_menu.addItem(&NSMenuItem::separatorItem(mtm));
+    add_item(&app_menu, "Hide JTerm", sel!(hide:), "h", cmd, None);
+    add_item(
+        &app_menu,
+        "Hide Others",
+        sel!(hideOtherApplications:),
+        "h",
+        cmd_opt,
+        None,
+    );
+    add_item(
+        &app_menu,
+        "Show All",
+        sel!(unhideAllApplications:),
+        "",
+        none,
+        None,
+    );
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
     add_item(&app_menu, "Quit JTerm", sel!(terminate:), "q", cmd, None);
 
@@ -583,11 +663,19 @@ fn build_menu_bar(mtm: MainThreadMarker, target: &AppController) -> Retained<NSM
     add_item(&view_menu, "Maximize Active Pane", sel!(menuZoomPane:), "\r", cmd_shift, tgt);
     add_item(&view_menu, "Use Transparency", sel!(menuToggleTransparency:), "u", cmd, tgt);
     view_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    let cmd_opt = NSEventModifierFlags::Command | NSEventModifierFlags::Option;
     add_item(&view_menu, "Transfers", sel!(menuToggleTransfers:), "l", cmd_opt, tgt);
     add_item(&view_menu, "Toggle Performance HUD", sel!(menuTogglePerfHud:), "i", cmd_opt, tgt);
 
-    main_menu
+    // Window menu (standard macOS Minimize Cmd+M, Minimize All Cmd+Opt+M, Zoom, Full Screen)
+    let window_menu = add_submenu("Window");
+    add_item(&window_menu, "Minimize", sel!(performMiniaturize:), "m", cmd, None);
+    add_item(&window_menu, "Minimize All", sel!(miniaturizeAll:), "m", cmd_opt, None);
+    add_item(&window_menu, "Zoom", sel!(performZoom:), "", none, None);
+    add_item(&window_menu, "Enter Full Screen", sel!(toggleFullScreen:), "f", ctrl_cmd, None);
+    window_menu.addItem(&NSMenuItem::separatorItem(mtm));
+    add_item(&window_menu, "Bring All to Front", sel!(arrangeInFront:), "", none, None);
+
+    (main_menu, window_menu)
 }
 
 /// Launch the native macOS AppKit + Metal application event loop.
@@ -609,8 +697,9 @@ pub fn run_macos_app(cfg: AppConfig) {
             None,
         );
     }
-    let menu = build_menu_bar(mtm, &controller);
+    let (menu, window_menu) = build_menu_bar(mtm, &controller);
     app.setMainMenu(Some(&menu));
+    app.setWindowsMenu(Some(&window_menu));
 
     // Open initial terminal window immediately (100% event-driven — ZERO permanent repeating NSTimer!
     // PTY output, AppKit delegates, hotkeys, and exact one-shot deadlines drive all wakeups so

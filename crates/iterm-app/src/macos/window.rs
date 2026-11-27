@@ -809,7 +809,7 @@ impl TerminalWindowState {
             UiCommand::OpenPreferences => {
                 self.request_open_prefs = true;
             }
-            UiCommand::ToggleFullscreen | UiCommand::None => {}
+            UiCommand::ToggleFullscreen | UiCommand::MinimizeWindow | UiCommand::None => {}
         }
     }
 

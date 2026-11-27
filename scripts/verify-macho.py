@@ -5,6 +5,9 @@ Inspects Mach-O magic, CPU type, load commands (LC_LOAD_DYLIB, LC_BUILD_VERSION,
 LC_CODE_SIGNATURE, LC_MAIN), and checks that Apple frameworks & libSystem are
 properly linked and ad-hoc signed for Apple Silicon.
 """
+import argparse
+import hashlib
+import os
 import struct
 import sys
 
@@ -23,6 +26,10 @@ LC_MAIN = 0x80000028
 LC_BUILD_VERSION = 0x32
 LC_VERSION_MIN_MACOSX = 0x24
 
+CS_LINKER_SIGNED = 0x00020000
+CSMAGIC_EMBEDDED_SIGNATURE = 0xFADE0CC0
+CSMAGIC_CODEDIRECTORY = 0xFADE0C02
+
 CPU_NAMES = {
     CPU_TYPE_X86_64: "x86_64",
     CPU_TYPE_ARM64: "arm64",
@@ -31,6 +38,33 @@ CPU_NAMES = {
 
 def decode_version(v: int) -> str:
     return f"{(v >> 16) & 0xFFFF}.{(v >> 8) & 0xFF}.{v & 0xFF}"
+
+
+def parse_codesig(sig: bytes) -> dict | None:
+    if len(sig) < 12:
+        return None
+    smagic, _slen, scount = struct.unpack_from(">III", sig, 0)
+    if smagic != CSMAGIC_EMBEDDED_SIGNATURE:
+        return None
+    for j in range(scount):
+        _btype, boff = struct.unpack_from(">II", sig, 12 + j * 8)
+        bmagic, blen = struct.unpack_from(">II", sig, boff)
+        if bmagic == CSMAGIC_CODEDIRECTORY:
+            ver, cdflags, _hash_off, ident_off, nspec, ncode = struct.unpack_from(
+                ">IIIIII", sig, boff + 8
+            )
+            end = sig.index(b"\x00", boff + ident_off)
+            ident = sig[boff + ident_off : end].decode("utf-8", errors="replace")
+            cdhash = hashlib.sha256(sig[boff : boff + blen]).hexdigest()[:40]
+            return {
+                "version": ver,
+                "flags": cdflags,
+                "ident": ident,
+                "n_special_slots": nspec,
+                "n_code_slots": ncode,
+                "cdhash": cdhash,
+            }
+    return None
 
 
 def inspect_slice(data: bytes, offset: int = 0) -> dict:
@@ -42,6 +76,7 @@ def inspect_slice(data: bytes, offset: int = 0) -> dict:
     dylibs = []
     has_codesig = False
     codesig_size = 0
+    codesig_info = None
     has_main = False
     min_os = None
     sdk_ver = None
@@ -55,7 +90,8 @@ def inspect_slice(data: bytes, offset: int = 0) -> dict:
             dylibs.append(name)
         elif cmd == LC_CODE_SIGNATURE:
             has_codesig = True
-            _, codesig_size = struct.unpack_from("<II", data, pos + 8)
+            sig_off, codesig_size = struct.unpack_from("<II", data, pos + 8)
+            codesig_info = parse_codesig(data[offset + sig_off : offset + sig_off + codesig_size])
         elif cmd == LC_MAIN:
             has_main = True
         elif cmd == LC_BUILD_VERSION:
@@ -75,6 +111,7 @@ def inspect_slice(data: bytes, offset: int = 0) -> dict:
         "has_main": has_main,
         "has_codesig": has_codesig,
         "codesig_size": codesig_size,
+        "codesig_info": codesig_info,
         "min_os": min_os,
         "sdk_ver": sdk_ver,
         "dylibs": dylibs,
@@ -82,11 +119,13 @@ def inspect_slice(data: bytes, offset: int = 0) -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print("usage: verify-macho.py <binary>", file=sys.stderr)
-        return 2
+    parser = argparse.ArgumentParser(description="Verify Mach-O binary & optional .app bundle signature")
+    parser.add_argument("binary", help="Path to Mach-O binary")
+    parser.add_argument("--bundle", help="Path to enclosing .app bundle to verify CodeResources")
+    parser.add_argument("--expect-ident", help="Expected CodeDirectory identifier (e.g. dev.moomou.jterm)")
+    args = parser.parse_args()
 
-    path = sys.argv[1]
+    path = args.binary
     with open(path, "rb") as f:
         data = f.read()
 
@@ -118,6 +157,27 @@ def main() -> int:
         print(f"\n  Arch: {s['arch']} ({s['slice_size']:,} bytes)")
         print(f"    LC_MAIN:           {s['has_main']}")
         print(f"    LC_CODE_SIGNATURE: {s['has_codesig']} ({s['codesig_size']} bytes)")
+        if s["codesig_info"]:
+            ci = s["codesig_info"]
+            print(
+                f"    CodeDirectory:     ident={ci['ident']!r} flags={ci['flags']:#x} "
+                f"specialSlots={ci['n_special_slots']} cdhash={ci['cdhash']}"
+            )
+            if args.expect_ident and ci["ident"] != args.expect_ident:
+                print(
+                    f"    FAIL: CodeDirectory ident={ci['ident']!r} != {args.expect_ident!r}",
+                    file=sys.stderr,
+                )
+                ok = False
+            if args.expect_ident and (ci["flags"] & CS_LINKER_SIGNED):
+                print("    FAIL: binary still carries CS_LINKER_SIGNED flag (breaks macOS TCC!)", file=sys.stderr)
+                ok = False
+            if args.bundle and ci["n_special_slots"] < 3:
+                print(
+                    f"    FAIL: expected Info.plist + CodeResources special slots (>=3), got {ci['n_special_slots']}",
+                    file=sys.stderr,
+                )
+                ok = False
         print(f"    Platform/SDK:      {s['min_os']} sdk={s['sdk_ver']}")
         print(f"    Linked libraries ({len(s['dylibs'])}):")
         for d in s["dylibs"]:
@@ -131,6 +191,14 @@ def main() -> int:
         if not any("libSystem.B.dylib" in d for d in s["dylibs"]):
             print("    FAIL: missing libSystem.B.dylib", file=sys.stderr)
             ok = False
+
+    if args.bundle:
+        code_res = os.path.join(args.bundle, "Contents", "_CodeSignature", "CodeResources")
+        if not os.path.isfile(code_res):
+            print(f"  FAIL: missing sealed bundle manifest {code_res}", file=sys.stderr)
+            ok = False
+        else:
+            print(f"\n  Bundle seal:       {code_res} ({os.path.getsize(code_res):,} bytes)")
 
     return 0 if ok else 1
 

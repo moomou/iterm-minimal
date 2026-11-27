@@ -336,5 +336,17 @@ mod tests {
             resolve_key_event_with_kitty(&cmd_3, &cfg, prof, TermModes::default(), 0),
             UiCommand::SelectTab(2)
         );
+        // Cmd+M minimizes active window on macOS
+        let cmd_m = KeyEventInput {
+            key_code_char: 'm' as u32,
+            characters: "m".into(),
+            virtual_key: 46,
+            mods: modifiers::COMMAND,
+            is_right_option: false,
+        };
+        assert_eq!(
+            resolve_key_event_with_kitty(&cmd_m, &cfg, prof, TermModes::default(), 0),
+            UiCommand::MinimizeWindow
+        );
     }
 }

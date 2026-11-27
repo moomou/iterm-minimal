@@ -303,6 +303,13 @@ define_class!(
                 }
                 return;
             }
+            if cmd == UiCommand::MinimizeWindow {
+                drop(guard);
+                if let Some(w) = self.window() {
+                    w.performMiniaturize(None);
+                }
+                return;
+            }
             st.handle_command(cmd, vp_w, vp_h);
             st.render_if_needed(vp_w, vp_h);
             let opacity_sync = if std::mem::take(&mut st.window_opacity_dirty) {
@@ -1225,6 +1232,20 @@ impl TerminalMetalView {
         if need_app_tick {
             crate::macos::app::schedule_main_wakeup();
         } else if let Some(d) = next_wake {
+            crate::macos::app::schedule_main_wakeup_after(d);
+        }
+    }
+
+    pub fn show_toast(&self, msg: String) {
+        let (vp_w, vp_h) = self.viewport_px();
+        let mut next_wake = None;
+        if let Some(ref mut st) = *self.ivars().state.borrow_mut() {
+            st.status_toast = Some((msg, std::time::Instant::now() + std::time::Duration::from_secs(5)));
+            st.wake_flag.store(true, Ordering::Release);
+            st.render_if_needed(vp_w, vp_h);
+            next_wake = st.next_scheduled_wakeup();
+        }
+        if let Some(d) = next_wake {
             crate::macos::app::schedule_main_wakeup_after(d);
         }
     }
