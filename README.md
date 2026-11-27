@@ -61,16 +61,16 @@ A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-
 
 Download from GitHub Releases (`https://github.com/moomou/jterm/releases`):
 
-- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.23-macos-universal.zip` (or `.tar.gz`)
+- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.24-macos-universal.zip` (or `.tar.gz`)
   ```bash
-  unzip JTerm-v0.1.23-macos-universal.zip -d /Applications/
+  unzip JTerm-v0.1.24-macos-universal.zip -d /Applications/
   xattr -dr com.apple.quarantine /Applications/JTerm.app
   open /Applications/JTerm.app
   ```
-- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.23-linux-x86_64.tar.gz`
+- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.24-linux-x86_64.tar.gz`
   ```bash
-  tar -xzf jterm-v0.1.23-linux-x86_64.tar.gz
-  ./jterm-v0.1.23-linux-x86_64/jterm --benchmark
+  tar -xzf jterm-v0.1.24-linux-x86_64.tar.gz
+  ./jterm-v0.1.24-linux-x86_64/jterm --benchmark
   ```
 
 ### macOS Privacy & TCC Permissions (Screen Recording, Accessibility, etc.)
@@ -99,6 +99,8 @@ Because public builds use an ad-hoc signature (no Apple Developer Team ID), macO
 | `Cmd+Opt+L` | Toggle live SCP Transfers queue & progress overlay (cancel `[x]` / Clear) |
 | `Cmd+Opt+I` | Toggle live Metal GPU Performance HUD |
 | `Cmd+Click` | Semantic History (open URL / local file / SCP download remote artifact) |
+| `Option+Double-Click` | Select whole logical line (follows soft-wrapped continuations) |
+| `Option+Shift+Double-Click` | Select trimmed line text (ignores leading & trailing whitespace) |
 | `Cmd+V` / Drag & Drop | Paste text, local file paths, or auto-upload files/screenshots via SSH `scp` |
 
 ## Building From Source

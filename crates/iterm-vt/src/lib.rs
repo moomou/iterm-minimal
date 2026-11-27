@@ -489,6 +489,69 @@ mod tests {
     }
 
     #[test]
+    fn line_and_trimmed_line_selection_handles_whitespace_softwrap_wide_and_blank() {
+        let mut s = TerminalScreen::new(20, 6, 50);
+        s.feed(b"   hello world   \r\n");
+        s.feed(b"    x    \r\n");
+        s.feed(b"        \r\n");
+        s.feed("  你好  \r\n".as_bytes());
+
+        // Row 0: Option+double-click selects whole line (cols 0..19)
+        let l0 = s.visible_abs_line(0);
+        let whole = s.select_whole_line(l0);
+        assert_eq!(whole.mode, SelectionMode::Line);
+        assert_eq!(whole.start, SelectionPoint { abs_line: l0, col: 0 });
+        assert_eq!(whole.end, SelectionPoint { abs_line: l0, col: 19 });
+        assert_eq!(s.extract_selection_text().as_deref(), Some("   hello world"));
+
+        // Row 0: Option+Shift+double-click selects trimmed text only (cols 3..13)
+        let trimmed = s.select_trimmed_line(l0).unwrap();
+        assert_eq!(trimmed.start, SelectionPoint { abs_line: l0, col: 3 });
+        assert_eq!(trimmed.end, SelectionPoint { abs_line: l0, col: 13 });
+        assert!(!trimmed.contains(l0, 2));
+        assert!(trimmed.contains(l0, 3));
+        assert!(trimmed.contains(l0, 13));
+        assert!(!trimmed.contains(l0, 14));
+        assert_eq!(s.extract_selection_text().as_deref(), Some("hello world"));
+
+        // Row 1: Single non-whitespace character
+        let l1 = s.visible_abs_line(1);
+        let single = s.select_trimmed_line(l1).unwrap();
+        assert_eq!(single.start, SelectionPoint { abs_line: l1, col: 4 });
+        assert_eq!(single.end, SelectionPoint { abs_line: l1, col: 4 });
+        assert_eq!(s.extract_selection_text().as_deref(), Some("x"));
+
+        // Row 2: All-whitespace line selects nothing
+        let l2 = s.visible_abs_line(2);
+        assert!(s.select_trimmed_line(l2).is_none());
+        assert!(s.selection.is_none());
+
+        // Row 3: Wide CJK characters preserve full 2-column highlight on trailing wide char
+        let l3 = s.visible_abs_line(3);
+        let wide = s.select_trimmed_line(l3).unwrap();
+        assert_eq!(wide.start, SelectionPoint { abs_line: l3, col: 2 });
+        assert_eq!(wide.end, SelectionPoint { abs_line: l3, col: 5 });
+        assert_eq!(s.extract_selection_text().as_deref(), Some("你好"));
+
+        // Soft-wrapped multi-row line (width 10): "  abcdefgh" (wrapped) + "ij  "
+        let mut w = TerminalScreen::new(10, 4, 50);
+        w.feed(b"  abcdefghij  \r\n");
+        let r0 = w.visible_abs_line(0);
+        let r1 = w.visible_abs_line(1);
+        assert!(w.primary.meta(0).wrapped());
+        // Clicking continuation row r1 selects across both rows
+        let wrap_whole = w.select_whole_line(r1);
+        assert_eq!(wrap_whole.start.abs_line, r0);
+        assert_eq!(wrap_whole.end.abs_line, r1);
+        assert_eq!(w.extract_selection_text().as_deref(), Some("  abcdefghij"));
+
+        let wrap_trim = w.select_trimmed_line(r1).unwrap();
+        assert_eq!(wrap_trim.start, SelectionPoint { abs_line: r0, col: 2 });
+        assert_eq!(wrap_trim.end, SelectionPoint { abs_line: r1, col: 1 });
+        assert_eq!(w.extract_selection_text().as_deref(), Some("abcdefghij"));
+    }
+
+    #[test]
     fn adversarial_random_vt_fuzz_1mb_never_panics() {
         // Deterministic 1 MiB adversarial corpus mixing random CSI/OSC/DCS/tmux/UTF-8/invalid bytes + mid-stream resizes!
         let mut s = TerminalScreen::new(80, 24, 500);

@@ -455,41 +455,45 @@ define_class!(
                 let mut s = sess.screen.lock();
                 let abs_line = s.visible_abs_line(row.min(s.rows().saturating_sub(1)));
                 let col_clamped = col.min(s.cols().saturating_sub(1));
+                let has_opt = (mods & modifiers::OPTION) != 0;
+                let has_shift = (mods & modifiers::SHIFT) != 0;
+                let click_pt = SelectionPoint {
+                    abs_line,
+                    col: col_clamped,
+                };
+                st.selection_click_cell = Some(click_pt);
                 if clicks == 2 {
-                    let mut scratch = Vec::new();
-                    let (cells, _, _, _, _) =
-                        s.read_visible_row(row.min(s.rows() - 1), &mut scratch);
-                    let line = iterm_vt::row_cells_to_string(cells, false);
-                    let (c0, c1) = word_bounds_at(&line, col_clamped, &st.app_cfg.word_characters);
-                    s.selection = Some(Selection {
-                        start: SelectionPoint { abs_line, col: c0 },
-                        end: SelectionPoint { abs_line, col: c1 },
-                        mode: SelectionMode::Word,
-                    });
+                    if has_opt && has_shift {
+                        // Option+Shift+double-click: select actual text on line ignoring whitespace prefix/suffix
+                        s.select_trimmed_line(abs_line);
+                    } else if has_opt {
+                        // Option+double-click: select whole logical line (including soft-wrapped continuations)
+                        s.select_whole_line(abs_line);
+                    } else {
+                        let mut scratch = Vec::new();
+                        let (cells, _, _, _, _) =
+                            s.read_visible_row(row.min(s.rows() - 1), &mut scratch);
+                        let line = iterm_vt::row_cells_to_string(cells, false);
+                        let (c0, c1) =
+                            word_bounds_at(&line, col_clamped, &st.app_cfg.word_characters);
+                        s.selection = Some(Selection {
+                            start: SelectionPoint { abs_line, col: c0 },
+                            end: SelectionPoint { abs_line, col: c1 },
+                            mode: SelectionMode::Word,
+                        });
+                    }
                     st.selection_anchor = None;
                 } else if clicks >= 3 {
-                    let max_c = s.cols().saturating_sub(1);
-                    s.selection = Some(Selection {
-                        start: SelectionPoint { abs_line, col: 0 },
-                        end: SelectionPoint {
-                            abs_line,
-                            col: max_c,
-                        },
-                        mode: SelectionMode::Line,
-                    });
+                    s.select_whole_line(abs_line);
                     st.selection_anchor = None;
                 } else {
-                    let mode = if (mods & modifiers::OPTION) != 0 {
+                    let mode = if has_opt {
                         SelectionMode::Block
                     } else {
                         SelectionMode::Normal
                     };
-                    let pt = SelectionPoint {
-                        abs_line,
-                        col: col_clamped,
-                    };
                     s.selection = None;
-                    st.selection_anchor = Some((pt, mode));
+                    st.selection_anchor = Some((click_pt, mode));
                 }
                 drop(s);
                 st.selecting = true;
@@ -556,7 +560,13 @@ define_class!(
                         col: c_clamped,
                     };
                     if let Some(ref mut sel) = s.selection {
-                        sel.end = cur_pt;
+                        // Guard multi-click selections (Word / Line / trimmed line) against 1-2px
+                        // click-release jitter on the clicked cell!
+                        let moved_off_click = st.selection_anchor.is_some()
+                            || st.selection_click_cell != Some(cur_pt);
+                        if moved_off_click {
+                            sel.end = cur_pt;
+                        }
                     } else if let Some((anchor, mode)) = st.selection_anchor {
                         if cur_pt != anchor {
                             s.selection = Some(Selection {
@@ -595,6 +605,7 @@ define_class!(
             if st.selecting {
                 st.selecting = false;
                 st.selection_anchor = None;
+                st.selection_click_cell = None;
                 if st.app_cfg.copy_selection {
                     if let Some(sess) = st.sessions.get(&active_id) {
                         let s = sess.screen.lock();

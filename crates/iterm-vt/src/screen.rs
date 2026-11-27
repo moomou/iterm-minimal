@@ -1077,6 +1077,165 @@ impl TerminalScreen {
         (row, meta.generation, meta.host_id, meta.cwd_id, arts)
     }
 
+    /// Return whether an absolute line (`evicted..screen_end`) soft-wrapped onto the following row.
+    fn abs_line_wrapped(&self, abs_line: u64) -> bool {
+        let evicted = self.scrollback.evicted_lines();
+        let sb_len = self.scrollback.len() as u64;
+        let screen_top = evicted + sb_len;
+        let screen_end = screen_top + self.rows() as u64;
+        if abs_line < evicted || abs_line >= screen_end {
+            return false;
+        }
+        if abs_line < screen_top {
+            let sb_idx = (abs_line - evicted) as usize;
+            self.scrollback.get(sb_idx).is_some_and(|(_, m)| m.wrapped())
+        } else {
+            let r = (abs_line - screen_top) as usize;
+            self.active_grid().meta(r).wrapped()
+        }
+    }
+
+    /// Return the inclusive `(start_abs_line, end_abs_line)` range of the logical (soft-wrapped)
+    /// line containing `abs_line`.
+    pub fn logical_line_bounds(&self, abs_line: u64) -> (u64, u64) {
+        let evicted = self.scrollback.evicted_lines();
+        let sb_len = self.scrollback.len() as u64;
+        let screen_top = evicted + sb_len;
+        let screen_end = screen_top + self.rows() as u64;
+        if screen_end == evicted {
+            return (abs_line, abs_line);
+        }
+        let min_abs = if self.modes.contains(TermModes::ALT_SCREEN) {
+            screen_top
+        } else {
+            evicted
+        };
+        let max_abs = screen_end.saturating_sub(1).max(min_abs);
+        let mut start = abs_line.clamp(min_abs, max_abs);
+        let mut end = start;
+        while start > min_abs && self.abs_line_wrapped(start - 1) {
+            start -= 1;
+        }
+        while end < max_abs && self.abs_line_wrapped(end) {
+            end += 1;
+        }
+        (start, end)
+    }
+
+    /// Select the entire logical line (following soft-wrapped continuations) containing `abs_line`.
+    pub fn select_whole_line(&mut self, abs_line: u64) -> Selection {
+        let (start_abs, end_abs) = self.logical_line_bounds(abs_line);
+        let max_c = self.cols().saturating_sub(1);
+        let sel = Selection {
+            start: SelectionPoint {
+                abs_line: start_abs,
+                col: 0,
+            },
+            end: SelectionPoint {
+                abs_line: end_abs,
+                col: max_c,
+            },
+            mode: SelectionMode::Line,
+        };
+        self.selection = Some(sel);
+        sel
+    }
+
+    /// Select the actual text span on the logical line containing `abs_line`, ignoring leading
+    /// and trailing whitespace (used by Option+Shift+double-click).
+    pub fn select_trimmed_line(&mut self, abs_line: u64) -> Option<Selection> {
+        let (start_abs, end_abs) = self.logical_line_bounds(abs_line);
+        let evicted = self.scrollback.evicted_lines();
+        let sb_len = self.scrollback.len() as u64;
+        let screen_top = evicted + sb_len;
+        let screen_end = screen_top + self.rows() as u64;
+        let cols = self.cols();
+        let mut scratch = Vec::new();
+
+        let mut first: Option<SelectionPoint> = None;
+        'fwd: for line in start_abs..=end_abs {
+            if line < evicted || line >= screen_end {
+                continue;
+            }
+            let cells: &[Cell] = if line < screen_top {
+                let sb_idx = (line - evicted) as usize;
+                scratch.resize(cols, Cell::BLANK);
+                if self.scrollback.copy_line_padded(sb_idx, &mut scratch).is_none() {
+                    continue;
+                }
+                scratch.as_slice()
+            } else {
+                self.active_grid().row((line - screen_top) as usize)
+            };
+            for (c, cell) in cells.iter().enumerate() {
+                if cell.flags.contains(CellFlags::WIDE_SPACER) {
+                    continue;
+                }
+                if cell.ch != '\0' && !cell.ch.is_whitespace() {
+                    first = Some(SelectionPoint {
+                        abs_line: line,
+                        col: c,
+                    });
+                    break 'fwd;
+                }
+            }
+        }
+
+        let start_pt = match first {
+            Some(pt) => pt,
+            None => {
+                self.selection = None;
+                return None;
+            }
+        };
+
+        let mut last = start_pt;
+        'rev: for line in (start_pt.abs_line..=end_abs).rev() {
+            if line < evicted || line >= screen_end {
+                continue;
+            }
+            let cells: &[Cell] = if line < screen_top {
+                let sb_idx = (line - evicted) as usize;
+                scratch.resize(cols, Cell::BLANK);
+                if self.scrollback.copy_line_padded(sb_idx, &mut scratch).is_none() {
+                    continue;
+                }
+                scratch.as_slice()
+            } else {
+                self.active_grid().row((line - screen_top) as usize)
+            };
+            for c in (0..cells.len()).rev() {
+                let cell = cells[c];
+                if cell.flags.contains(CellFlags::WIDE_SPACER) {
+                    continue;
+                }
+                if cell.ch != '\0' && !cell.ch.is_whitespace() {
+                    let end_col = if cell.flags.contains(CellFlags::WIDE_CHAR)
+                        && c + 1 < cells.len()
+                        && cells[c + 1].flags.contains(CellFlags::WIDE_SPACER)
+                    {
+                        c + 1
+                    } else {
+                        c
+                    };
+                    last = SelectionPoint {
+                        abs_line: line,
+                        col: end_col,
+                    };
+                    break 'rev;
+                }
+            }
+        }
+
+        let sel = Selection {
+            start: start_pt,
+            end: last,
+            mode: SelectionMode::Word,
+        };
+        self.selection = Some(sel);
+        Some(sel)
+    }
+
     /// Extract selected text cleanly (respecting soft-wrap joining and Block mode).
     pub fn extract_selection_text(&self) -> Option<String> {
         let sel = self.selection?;
