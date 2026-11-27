@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.20"
+version = "0.1.21"
 edition = "2021"
 license = "MIT"
 authors = ["moomou"]
@@ -44,6 +44,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "objc2-core-graphics",
     "objc2-quartz-core",
     "NSAccessibility",
+    "NSAppearance",
     "NSApplication",
     "NSButton",
     "NSCell",

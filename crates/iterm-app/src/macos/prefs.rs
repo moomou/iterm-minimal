@@ -216,7 +216,7 @@ impl PreferencesController {
                 false,
             )
         };
-        win.setTitle(&NSString::from_str("iTermMinimal Preferences"));
+        win.setTitle(&NSString::from_str("JTerm Preferences"));
         unsafe { win.setReleasedWhenClosed(false) };
         win.center();
 

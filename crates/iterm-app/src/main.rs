@@ -9,9 +9,9 @@ use std::path::PathBuf;
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
-    // Log panics with file/line to ~/Library/Logs/iTermMinimal.panic.log before aborting
+    // Log panics with file/line to ~/Library/Logs/JTerm.panic.log before aborting
     std::panic::set_hook(Box::new(|info| {
-        let msg = format!("iTermMinimal panic: {info}\n");
+        let msg = format!("JTerm panic: {info}\n");
         eprintln!("{msg}");
         if let Ok(home) = std::env::var("HOME") {
             let log_dir = PathBuf::from(home).join("Library/Logs");
@@ -19,7 +19,7 @@ fn main() {
             let _ = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(log_dir.join("iTermMinimal.panic.log"))
+                .open(log_dir.join("JTerm.panic.log"))
                 .and_then(|mut f| std::io::Write::write_all(&mut f, msg.as_bytes()));
         }
     }));
@@ -48,16 +48,16 @@ fn main() {
                 }
             }
             "--version" | "-V" => {
-                println!("iTermMinimal {} (Rust + Metal + CoreText)", env!("CARGO_PKG_VERSION"));
+                println!("jterm {} (Rust + Metal + CoreText)", env!("CARGO_PKG_VERSION"));
                 return;
             }
             "--help" | "-h" => {
                 println!(
-                    "iTermMinimal — High-performance macOS terminal with iTerm2 profile parity\n\n\
-                     USAGE:\n  iterm-minimal [OPTIONS]\n\n\
+                    "jterm — High-performance macOS terminal with iTerm2 profile parity\n\n\
+                     USAGE:\n  jterm [OPTIONS]\n\n\
                      OPTIONS:\n  \
                      --plist <PATH>         Launch directly using an iTerm2 com.googlecode.iterm2.plist\n  \
-                     --import-plist <PATH>  One-time import iTerm2 plist to ~/.config/iterm-minimal/config.json\n  \
+                     --import-plist <PATH>  One-time import iTerm2 plist to ~/.config/jterm/config.json\n  \
                      --dump-profile         Print resolved active profile & keymap summary\n  \
                      --benchmark            Run VT, dirty-row frame prep, scrollback, and PTY benchmarks\n  \
                      -V, --version          Print version\n  \
@@ -135,7 +135,7 @@ fn main() {
     #[cfg(not(target_os = "macos"))]
     {
         println!(
-            "iTermMinimal GUI targets macOS (AppKit + Metal + CoreText).\n\
+            "jterm GUI targets macOS (AppKit + Metal + CoreText).\n\
              On Linux, use --benchmark, --dump-profile, --plist <path>, or scripts/build-macos.sh."
         );
     }

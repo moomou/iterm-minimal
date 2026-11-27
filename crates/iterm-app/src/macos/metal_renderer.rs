@@ -253,6 +253,7 @@ impl MetalRenderer {
         layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
         layer.setFramebufferOnly(true);
         layer.setOpaque(opaque);
+        layer.setNeedsDisplayOnBoundsChange(false);
         layer.setMaximumDrawableCount(3);
         layer.setDisplaySyncEnabled(true);
     }

@@ -64,7 +64,7 @@ mod tests {
   </array>
 </dict>
 </plist>"#;
-        let tmp = std::env::temp_dir().join(format!("iterm-minimal-test-{}.plist", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("jterm-test-{}.plist", std::process::id()));
         std::fs::write(&tmp, sample_plist).expect("write temp plist");
         let cfg = AppConfig::from_iterm2_plist(&tmp).expect("must parse XML iTerm2 plist");
         let _ = std::fs::remove_file(&tmp);

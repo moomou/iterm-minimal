@@ -1,6 +1,6 @@
-# iTermMinimal (Rust + Metal + CoreText + AppKit)
+# jterm (Rust + Metal + CoreText + AppKit)
 
-A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-in iTerm2 profile/plist/keymap compatibility, native Apple Metal GPU rendering, CoreText ligatures & `NSTextInputClient` IME, and deterministic SSH+tmux file transfers. Cross-compiled into an ad-hoc signed Universal (`arm64` + `x86_64`) macOS `.app` bundle and Linux x86_64 CLI/benchmark tool.
+A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-in iTerm2 profile/plist/keymap compatibility, native Apple Metal GPU rendering, CoreText ligatures & `NSTextInputClient` IME, live PTY-wrapped `scp` Transfer Queue, and zero-wakeup macOS energy efficiency. Cross-compiled into an ad-hoc signed Universal (`arm64` + `x86_64`) macOS `JTerm.app` bundle and Linux x86_64 CLI/benchmark tool.
 
 ## Highlights
 
@@ -13,14 +13,15 @@ A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-
   - 3-permit GPU completion fence (`InFlightFence` + `MTLCommandBuffer.addCompletedHandler`) gating `TripleRingBuffer` persistent Metal buffers, with live hardware `GPUStartTime`/`GPUEndTime` telemetry (`Cmd+Opt+I` Performance HUD)
   - Scroll-invariant `row_gen` cache + lock-free incremental `PaneSnapshot` + lock-free L1 ASCII `AtlasEntry` lookup + collision-safe generational LRU shaper cache
   - Pixel-exact procedural Box Drawing (`U+2500..=U+257F`), Block Elements (`U+2580..=U+259F`), Braille (`U+2800..=U+28FF`), and anti-aliased SDF Powerline separators (`   `) + luminance-aware Retina text gamma
+  - Flicker-free `Cmd+Tab` transitions (`NSViewLayerContentsRedrawPolicy::Never`, Dark/Light `NSAppearance` matching theme luminance, and theme-matched `CAMetalLayer` `CGColor` backing)
 - **macOS Energy Efficiency & Zero-Wakeup Idle**
   - **0.00 idle wakeups/sec**: zero permanent repeating `NSTimer`s and infinite kernel `poll(-1)` sleep across all idle PTY tabs/panes (enabling full macOS App Nap and deep Apple Silicon C-states)
-  - **Zero GPU when occluded / minimized / hidden**: checks `NSWindowOcclusionState::Visible` + `windowDidChangeOcclusionState:` / `applicationDidUnhide:` so hidden or other-Space windows skip all CoreText shaping and Metal GPU submissions (`0.0%` GPU), repainting in `<1 ms` on reveal
-  - **Adaptive Power-Aware Refresh**: 120 Hz ProMotion when focused, automatic 60 Hz cap + blink pause in macOS Low Power Mode (`NSProcessInfo.isLowPowerModeEnabled`), 30 Hz cap for unfocused visible background windows, and integrated low-power GPU selection (`MTLCopyAllDevices` + `isLowPower()` + `NSSupportsAutomaticGraphicsSwitching`)
+  - **Zero GPU when occluded / minimized / hidden / background tabs**: checks `NSWindowOcclusionState::Visible`, skips Metal submits when inactive tabs or no-op PTY bursts produce zero visible changes, and repaints in `<1 ms` on reveal
+  - **Honors macOS `reduceTransparency` & Low Power Mode**: respects `NSWorkspace.accessibilityDisplayShouldReduceTransparency()` live (full opaque surface bypassing `WindowServer` alpha-blending), adaptive 120 Hz / 60 Hz LPM / 30 Hz unfocused flood cap, and integrated low-power GPU selection (`MTLCopyAllDevices` + `isLowPower()` + `NSSupportsAutomaticGraphicsSwitching`)
 - **iTerm2 Compatibility & Native macOS UX (`crates/iterm-profile`, `crates/iterm-pty`, `crates/iterm-app`)**
   - Direct XML/binary `com.googlecode.iterm2.plist`, `DynamicProfiles/*.json`, and `.itermcolors` import (profiles, keymaps, Smart Selection Rules, Semantic History, Dracula+ & custom color presets)
-  - Compact 26 pt unified titlebar tabs level with macOS traffic lights, split panes with drag dividers & inactive dimming, `Cmd+,` native Preferences panel, `Cmd+U` transparency toggle, `Cmd+F` inline search, right-click context menu, trackpad pinch-to-zoom, Carbon global hotkey window, full `NSTextInputClient` IME (CJK, dead keys, Emoji picker), Left/Right Option separation, and Kitty keyboard protocol (`CSI u`)
-  - Non-blocking async PTY `POLLOUT` write queue, zero-sleep 256 KiB reader, `OSC 1337;Artifact=` deterministic `Cmd+Click` remote SCP downloads, `it2dl`/`imgcat`, and `Cmd+V` / drag-and-drop automatic SSH ControlMaster `scp` uploads
+  - Compact 26 pt unified titlebar tabs level with macOS traffic lights, split panes with drag dividers & inactive dimming, `Cmd+,` native Preferences panel, `Cmd+U` transparency toggle, `Cmd+F` inline search, right-click context menu, trackpad pinch-to-zoom, Carbon global hotkey, full `NSTextInputClient` IME (CJK, dead keys, Emoji picker), Left/Right Option separation, and Kitty keyboard protocol (`CSI u`)
+  - Non-blocking async PTY `POLLOUT` write queue, zero-sleep 256 KiB reader, bounded `TransferQueue` with zero-dependency PTY-wrapped live `scp` progress HUD (`Cmd+Opt+L`), `OSC 1337;Artifact=` deterministic `Cmd+Click` downloads, `it2dl`/`imgcat`, and `Cmd+V` / drag-and-drop automatic SSH ControlMaster `scp` uploads
 
 ## Architecture
 
@@ -28,13 +29,13 @@ A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-
 | --- | --- |
 | `crates/iterm-profile` | iTerm2 XML/binary `.plist`, Dynamic Profiles JSON, and `.itermcolors` parser (profiles, color schemes, `Keyboard Map`, `GlobalKeyMap`, `Hotkey`, `Smart Selection Rules`, `Semantic History`). |
 | `crates/iterm-vt` | SIMD VT100/xterm/iTerm2 parser, `DCS tmux;` unwrapper, 16-byte `Cell`, O(1) `row_order` `ActiveGrid`, dual-tier recycled-slab `Scrollback`, auto-GC side tables, grapheme clusters, and resize reflow. |
-| `crates/iterm-pty` | POSIX PTY with iTerm2 env & launchd UTF-8 fallback, 256 KiB coalesced reader + non-blocking async `POLLOUT` writer, binary split-pane tree, multi-tab manager, and shell-injection-safe OpenSSH ControlMaster `scp` transfers. |
+| `crates/iterm-pty` | POSIX PTY with iTerm2 env & launchd UTF-8 fallback, 256 KiB coalesced reader + non-blocking async `POLLOUT` writer, binary split-pane tree, multi-tab manager, and PTY-wrapped live-progress OpenSSH ControlMaster `scp` `TransferQueue`. |
 | `crates/iterm-render` | Dual R8/RGBA8 glyph atlas, scroll-invariant `row_gen` cache, lock-free incremental `PaneSnapshot`, procedural Box/Block/Braille/Powerline geometry, generational LRU shaper cache, and Metal shaders (`shaders/terminal.metal`). |
-| `crates/iterm-app` | Native macOS `NSApplication`/`NSWindow` delegates, `CAMetalLayer` Metal renderer, CoreText ligature shaper, `NSTextInputClient` IME, `Cmd+,` Preferences window, Carbon global hotkey, and cross-platform CLI/benchmark runner. |
+| `crates/iterm-app` | Native macOS `NSApplication`/`NSWindow` delegates, `CAMetalLayer` Metal renderer, CoreText ligature shaper, `NSTextInputClient` IME, `Cmd+,` Preferences window, Carbon global hotkey, and cross-platform CLI/benchmark runner (`jterm`). |
 
-## Measured Performance (Linux x86_64, `--release`, v0.1.15)
+## Measured Performance (Linux x86_64, `--release`)
 
-| Benchmark (250x80 grid) | iTermMinimal v0.1.15 | Reference |
+| Benchmark (250x80 grid) | jterm | Reference |
 | --- | ---: | --- |
 | `kitten` ASCII single-chunk (8 MiB) | **6,666.2 MB/s** (1.20 ms) | Ghostty 1.4 parser: 725 MB/s; Kitty: 121.8 MB/s |
 | `stream64` ASCII 64 KiB chunks (8 MiB) | **4,763.8 MB/s** (1.68 ms) | Realistic PTY chunk streaming |
@@ -54,18 +55,18 @@ A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-
 
 ## Download Prebuilt Releases
 
-Download from GitHub Releases (`https://github.com/moomou/iterm-minimal/releases`):
+Download from GitHub Releases (`https://github.com/moomou/jterm/releases`):
 
-- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `iTermMinimal-v0.1.15-macos-universal.zip` (or `.tar.gz`)
+- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.21-macos-universal.zip` (or `.tar.gz`)
   ```bash
-  unzip iTermMinimal-v0.1.15-macos-universal.zip -d /Applications/
-  xattr -dr com.apple.quarantine /Applications/iTermMinimal.app
-  open /Applications/iTermMinimal.app
+  unzip JTerm-v0.1.21-macos-universal.zip -d /Applications/
+  xattr -dr com.apple.quarantine /Applications/JTerm.app
+  open /Applications/JTerm.app
   ```
-- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `iterm-minimal-v0.1.15-linux-x86_64.tar.gz`
+- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.21-linux-x86_64.tar.gz`
   ```bash
-  tar -xzf iterm-minimal-v0.1.15-linux-x86_64.tar.gz
-  ./iterm-minimal-v0.1.15-linux-x86_64/iterm-minimal --benchmark
+  tar -xzf jterm-v0.1.21-linux-x86_64.tar.gz
+  ./jterm-v0.1.21-linux-x86_64/jterm --benchmark
   ```
 
 ## Key Shortcuts (macOS)
@@ -90,10 +91,10 @@ Download from GitHub Releases (`https://github.com/moomou/iterm-minimal/releases
 ### Native macOS build
 ```bash
 cargo test --workspace
-cargo build --release --bin iterm-minimal
+cargo build --release --bin jterm
 ```
 
-### Cross-compiling macOS Universal `.app` on Linux (no Xcode required)
+### Cross-compiling macOS Universal `JTerm.app` on Linux (no Xcode required)
 Uses `rustup` Darwin targets (`aarch64-apple-darwin`, `x86_64-apple-darwin`), `rustup`'s bundled LLVM `ld64.lld` (`-adhoc_codesign`), and macOS SDK `.tbd` framework stubs:
 
 ```bash
@@ -103,23 +104,23 @@ Uses `rustup` Darwin targets (`aarch64-apple-darwin`, `x86_64-apple-darwin`), `r
 
 ## Using Your Existing iTerm2 Profile
 
-On macOS launch, `iTermMinimal` loads in order:
+On macOS launch, `jterm` loads in order:
 1. `--plist <path>` (if passed explicitly)
-2. `~/.config/iterm-minimal/config.json` (saved via `Cmd+,` Preferences or `--import-plist`)
+2. `~/.config/jterm/config.json` (saved via `Cmd+,` Preferences or `--import-plist`; automatically falls back to legacy `~/.config/iterm-minimal/config.json`)
 3. `~/Library/Preferences/com.googlecode.iterm2.plist` (+ `DynamicProfiles/*.json`)
 
 ```bash
-iterm-minimal --plist ~/Library/Preferences/com.googlecode.iterm2.plist --dump-profile
-iterm-minimal --benchmark
+jterm --plist ~/Library/Preferences/com.googlecode.iterm2.plist --dump-profile
+jterm --benchmark
 ```
 
 ## Deterministic SSH + tmux Shell Integration
 
-Included under `iTermMinimal.app/Contents/Resources/shell_integration/` (and in the Linux release archive):
+Included under `JTerm.app/Contents/Resources/shell_integration/` (and in the Linux release archive):
 - `it2artifact <file>`: prints a clickable path stamped with `OSC 1337;Artifact=...` (auto-wrapped in `DCS tmux;` passthrough inside tmux) for deterministic `Cmd+Click` OpenSSH ControlMaster `/usr/bin/scp` downloads into `~/Downloads`.
 - `it2dl <file>`: tmux-safe inline multipart file download.
 - `imgcat <image>`: tmux-safe inline Retina image rendering.
-- `iterm-minimal-shell-integration.sh`: bash/zsh hook emitting `OSC 133` prompt marks + `RemoteHost` + `CurrentDir`.
+- `jterm-shell-integration.sh`: bash/zsh hook emitting `OSC 133` prompt marks + `RemoteHost` + `CurrentDir`.
 
 ## License
 

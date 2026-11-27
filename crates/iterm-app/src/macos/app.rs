@@ -554,10 +554,10 @@ fn build_menu_bar(mtm: MainThreadMarker, target: &AppController) -> Retained<NSM
     let tgt: Option<&AnyObject> = Some(target);
 
     // App menu
-    let app_menu = add_submenu("iTermMinimal");
+    let app_menu = add_submenu("JTerm");
     add_item(&app_menu, "Settings…", sel!(menuPreferences:), ",", cmd, tgt);
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
-    add_item(&app_menu, "Quit iTermMinimal", sel!(terminate:), "q", cmd, None);
+    add_item(&app_menu, "Quit JTerm", sel!(terminate:), "q", cmd, None);
 
     // Shell menu
     let shell_menu = add_submenu("Shell");

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deterministic remote artifact emitter for iTermMinimal (works over SSH and inside regular tmux!).
+# Deterministic remote artifact emitter for jterm (works over SSH and inside regular tmux!).
 # Usage: it2artifact <file> [file ...]
 # Emits OSC 1337;Artifact=v=1;... stamped onto the printed path so Cmd+Click downloads
 # via OpenSSH ControlMaster /usr/bin/scp without fragile CWD/host heuristic guessing.

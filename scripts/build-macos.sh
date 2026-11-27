@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a release Universal (Apple Silicon arm64 + Intel x86_64) macOS iTermMinimal.app bundle on Linux.
+# Build a release Universal (Apple Silicon arm64 + Intel x86_64) macOS JTerm.app bundle on Linux.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,21 +15,21 @@ fi
 cd "${ROOT}"
 
 echo "==> [1/4] Building aarch64-apple-darwin (Apple Silicon, release LTO)..."
-cargo build --release --target aarch64-apple-darwin --bin iterm-minimal
+cargo build --release --target aarch64-apple-darwin --bin jterm
 
 echo "==> [2/4] Building x86_64-apple-darwin (Intel, release LTO)..."
-cargo build --release --target x86_64-apple-darwin --bin iterm-minimal
+cargo build --release --target x86_64-apple-darwin --bin jterm
 
-APP_DIR="${ROOT}/dist/iTermMinimal.app"
+APP_DIR="${ROOT}/dist/JTerm.app"
 rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources/shell_integration"
 
 echo "==> [3/4] Creating Universal (arm64 + x86_64) Mach-O binary & .app bundle..."
 python3 "${ROOT}/scripts/make-universal.py" \
-  "${APP_DIR}/Contents/MacOS/iterm-minimal" \
-  "${ROOT}/target/aarch64-apple-darwin/release/iterm-minimal" \
-  "${ROOT}/target/x86_64-apple-darwin/release/iterm-minimal"
-chmod +x "${APP_DIR}/Contents/MacOS/iterm-minimal"
+  "${APP_DIR}/Contents/MacOS/jterm" \
+  "${ROOT}/target/aarch64-apple-darwin/release/jterm" \
+  "${ROOT}/target/x86_64-apple-darwin/release/jterm"
+chmod +x "${APP_DIR}/Contents/MacOS/jterm"
 
 printf 'APPL????' > "${APP_DIR}/Contents/PkgInfo"
 
@@ -41,21 +41,21 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>iTermMinimal</string>
+  <string>JTerm</string>
   <key>CFBundleExecutable</key>
-  <string>iterm-minimal</string>
+  <string>jterm</string>
   <key>CFBundleIdentifier</key>
-  <string>dev.moomou.iterm-minimal</string>
+  <string>dev.moomou.jterm</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>iTermMinimal</string>
+  <string>JTerm</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.20</string>
+  <string>0.1.21</string>
   <key>CFBundleVersion</key>
-  <string>20</string>
+  <string>21</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
@@ -79,7 +79,7 @@ for util in imgcat it2dl; do
 done
 
 echo "==> [4/4] Verifying Universal Mach-O headers, frameworks, and ad-hoc code signatures..."
-python3 "${ROOT}/scripts/verify-macho.py" "${APP_DIR}/Contents/MacOS/iterm-minimal"
+python3 "${ROOT}/scripts/verify-macho.py" "${APP_DIR}/Contents/MacOS/jterm"
 
 echo ""
 echo "DONE: macOS Universal app bundle ready at:"
@@ -87,4 +87,4 @@ echo "  ${APP_DIR}"
 echo ""
 echo "Deploy to Mac:"
 echo "  rsync -av ${APP_DIR} <mac>:/Applications/"
-echo "  # First launch on macOS: xattr -dr com.apple.quarantine /Applications/iTermMinimal.app"
+echo "  # First launch on macOS: xattr -dr com.apple.quarantine /Applications/JTerm.app"

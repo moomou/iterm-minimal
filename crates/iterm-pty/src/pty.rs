@@ -124,7 +124,7 @@ impl PtyHandle {
             ("LC_TERMINAL_VERSION", "3.7.0"),
             ("ITERM_SESSION_ID", cfg.session_id.as_str()),
             ("ITERM_PROFILE", cfg.profile_name.as_str()),
-            ("ITERM_MINIMAL", "1"),
+            ("JTERM", "1"),
         ];
         let has_locale = std::env::var_os("LANG").is_some_and(|v| !v.is_empty())
             || std::env::var_os("LC_ALL").is_some_and(|v| !v.is_empty())

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 /// from `docs/minimal-perf-plan.md` (CPU text build, VT throughput, scrollback RSS, PTY throughput).
 pub fn run_all_benchmarks() {
     println!("==========================================================================");
-    println!("  iTermMinimal (Rust) Performance Benchmark Suite");
+    println!("  jterm (Rust) Performance Benchmark Suite");
     println!("==========================================================================\n");
 
     // 1. Standardized VT Benchmarks (kitten __benchmark__ + vtebench + iTerm2 + 16 MiB dump)

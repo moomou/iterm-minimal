@@ -48,7 +48,7 @@ impl TerminalSession {
     ) -> Result<Self, PtyError> {
         let numeric_id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
         let id = SessionId(numeric_id);
-        let iterm_session_uuid = format!("w0t0p{numeric_id}:ITERM-MINIMAL-{numeric_id:08X}");
+        let iterm_session_uuid = format!("w0t0p{numeric_id}:JTERM-{numeric_id:08X}");
 
         let mut spawn_cfg = if let Some(ref custom) = profile.custom_command {
             let parts = split_command_line(custom);

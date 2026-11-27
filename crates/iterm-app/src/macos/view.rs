@@ -16,10 +16,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSBackingStoreType, NSColor, NSDragOperation, NSDraggingInfo, NSEvent, NSMenu, NSMenuItem,
-    NSPasteboardTypeFileURL, NSTextInputClient, NSView, NSWindow, NSWindowCollectionBehavior,
-    NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSPasteboardTypeFileURL, NSTextInputClient, NSView, NSViewLayerContentsRedrawPolicy, NSWindow,
+    NSWindowCollectionBehavior, NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
 };
+use objc2_core_graphics::CGColor;
 use objc2_foundation::{
     NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSPoint, NSRange,
     NSRangePointer, NSRect, NSSize, NSString, NSUInteger,
@@ -81,6 +83,26 @@ define_class!(
         #[unsafe(method(wantsUpdateLayer))]
         fn wants_update_layer(&self) -> bool {
             true
+        }
+
+        /// Prevent AppKit from wiping/clearing our `CAMetalLayer` to white on `Cmd+Tab` /
+        /// activation / appearance transitions! Metal owns all drawing; keep the existing
+        /// presented drawable intact and only paint if dirty.
+        #[unsafe(method(updateLayer))]
+        fn update_layer(&self) {
+            let (vp_w, vp_h) = self.viewport_px();
+            if let Some(ref mut st) = *self.ivars().state.borrow_mut() {
+                st.render_if_needed(vp_w, vp_h);
+            }
+        }
+
+        #[unsafe(method(isOpaque))]
+        fn is_opaque(&self) -> bool {
+            self.ivars()
+                .state
+                .borrow()
+                .as_ref()
+                .is_some_and(|st| st.profile.transparency <= 0.001)
         }
 
         #[unsafe(method(setFrameSize:))]
@@ -1013,9 +1035,21 @@ impl TerminalMetalView {
 
         let metal_layer = CAMetalLayer::new();
         metal_layer.setContentsScale(scale_factor as f64);
-        // Set layer BEFORE wantsLayer=true to configure a proper AppKit layer-hosting NSView!
+        metal_layer.setNeedsDisplayOnBoundsChange(false);
+        let bg = profile.colors.background;
+        let is_opaque = reduce_transparency || profile.transparency <= 0.001;
+        let layer_alpha = if is_opaque {
+            1.0
+        } else {
+            (1.0 - profile.transparency).clamp(0.05, 1.0) as f64
+        };
+        let cg_bg = CGColor::new_srgb(bg.r as f64, bg.g as f64, bg.b as f64, layer_alpha);
+        metal_layer.setBackgroundColor(Some(&cg_bg));
+        // Set layer BEFORE wantsLayer=true to configure a proper AppKit layer-hosting NSView,
+        // and disable AppKit automatic redraw wipes on Cmd+Tab / focus changes!
         view.setLayer(Some(&metal_layer));
         view.setWantsLayer(true);
+        view.setLayerContentsRedrawPolicy(NSViewLayerContentsRedrawPolicy::Never);
 
         let state = TerminalWindowState::new(
             app_cfg,
@@ -1155,20 +1189,18 @@ impl TerminalMetalView {
     }
 
     fn apply_window_opacity(&self, is_opaque: bool, bg: iterm_profile::Rgba) {
-        if let Some(win) = self.window() {
-            win.setOpaque(is_opaque);
-            if is_opaque {
-                let ns_bg = NSColor::colorWithSRGBRed_green_blue_alpha(
-                    bg.r as f64,
-                    bg.g as f64,
-                    bg.b as f64,
-                    1.0,
-                );
-                win.setBackgroundColor(Some(&ns_bg));
+        // Sync CAMetalLayer CGColor background so bare layer never flashes white on Cmd+Tab / resize!
+        if let Some(ref st) = *self.ivars().state.borrow() {
+            let alpha = if is_opaque {
+                1.0
             } else {
-                // Transparent NSWindow MUST use clearColor() so Metal's pane_bg alpha is NEVER double-blended!
-                win.setBackgroundColor(Some(&NSColor::clearColor()));
-            }
+                (1.0 - st.profile.transparency).clamp(0.05, 1.0) as f64
+            };
+            let cg_bg = CGColor::new_srgb(bg.r as f64, bg.g as f64, bg.b as f64, alpha);
+            st.metal_layer.setBackgroundColor(Some(&cg_bg));
+        }
+        if let Some(win) = self.window() {
+            apply_window_appearance_and_bg(&win, is_opaque, bg);
             win.invalidateShadow();
         }
     }
@@ -1195,6 +1227,35 @@ impl TerminalMetalView {
         } else if let Some(d) = next_wake {
             crate::macos::app::schedule_main_wakeup_after(d);
         }
+    }
+}
+
+/// Apply matching Dark/Light `NSAppearance` and opaque/clear window background color so macOS
+/// `NSThemeFrame` & titlebar NEVER flash white during `Cmd+Tab` app switches!
+fn apply_window_appearance_and_bg(window: &NSWindow, is_opaque: bool, bg: iterm_profile::Rgba) {
+    let lum = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b;
+    let appearance_name = unsafe {
+        if lum < 0.5 {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        }
+    };
+    if let Some(app) = NSAppearance::appearanceNamed(appearance_name) {
+        window.setAppearance(Some(&app));
+    }
+    window.setOpaque(is_opaque);
+    if is_opaque {
+        let ns_bg = NSColor::colorWithSRGBRed_green_blue_alpha(
+            bg.r as f64,
+            bg.g as f64,
+            bg.b as f64,
+            1.0,
+        );
+        window.setBackgroundColor(Some(&ns_bg));
+    } else {
+        // Transparent NSWindow MUST use clearColor() so Metal's pane_bg alpha is NEVER double-blended!
+        window.setBackgroundColor(Some(&NSColor::clearColor()));
     }
 }
 
@@ -1227,7 +1288,7 @@ pub fn create_terminal_window(
         )
     };
     window.setTitle(&NSString::from_str(&format!(
-        "iTermMinimal — {}",
+        "JTerm — {}",
         profile.name
     )));
     window.setTitlebarAppearsTransparent(true);
@@ -1237,20 +1298,7 @@ pub fn create_terminal_window(
     unsafe { window.setReleasedWhenClosed(false) };
     let reduce_transparency = NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceTransparency();
     let is_opaque = reduce_transparency || profile.transparency <= 0.001;
-    window.setOpaque(is_opaque);
-    if is_opaque {
-        let bg = profile.colors.background;
-        let ns_bg = NSColor::colorWithSRGBRed_green_blue_alpha(
-            bg.r as f64,
-            bg.g as f64,
-            bg.b as f64,
-            1.0,
-        );
-        window.setBackgroundColor(Some(&ns_bg));
-    } else {
-        // Transparent NSWindow MUST use clearColor() so Metal's pane_bg alpha is NEVER double-blended!
-        window.setBackgroundColor(Some(&NSColor::clearColor()));
-    }
+    apply_window_appearance_and_bg(&window, is_opaque, profile.colors.background);
     // NEVER set `CanJoinAllSpaces` — terminal windows must stay on their assigned macOS Space
     // when switching workspaces instead of following the user across Spaces!
     if is_hotkey_window {

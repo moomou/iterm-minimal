@@ -284,8 +284,17 @@ impl AppConfig {
         self.profiles.iter().find(|p| p.guid == guid)
     }
 
-    /// Standard path for our cached native config JSON (`~/.config/iterm-minimal/config.json`).
+    /// Standard path for our cached native config JSON (`~/.config/jterm/config.json`).
     pub fn native_config_path() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        PathBuf::from(home)
+            .join(".config")
+            .join("jterm")
+            .join("config.json")
+    }
+
+    /// Legacy config path (`~/.config/iterm-minimal/config.json`) checked as seamless migration fallback.
+    fn legacy_config_path() -> PathBuf {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         PathBuf::from(home)
             .join(".config")
@@ -304,7 +313,7 @@ impl AppConfig {
 
     /// Load configuration in priority order:
     /// 1. Explicit `--plist <path>` if provided
-    /// 2. Cached `~/.config/iterm-minimal/config.json` (if present)
+    /// 2. Cached `~/.config/jterm/config.json` (or legacy `~/.config/iterm-minimal/config.json`)
     /// 3. Automatic one-time import from `~/Library/Preferences/com.googlecode.iterm2.plist`
     /// 4. Built-in Dracula+ / FiraCode default profile
     pub fn load_auto(explicit_plist: Option<&Path>) -> Result<Self, ProfileError> {
@@ -314,6 +323,10 @@ impl AppConfig {
         let native = Self::native_config_path();
         if native.exists() {
             return Self::from_json_file(&native);
+        }
+        let legacy = Self::legacy_config_path();
+        if legacy.exists() {
+            return Self::from_json_file(&legacy);
         }
         let iterm_plist = Self::standard_iterm2_plist_path();
         if iterm_plist.exists() {
@@ -327,7 +340,7 @@ impl AppConfig {
         Ok(Self::default())
     }
 
-    /// Save imported config as clean fast JSON (`~/.config/iterm-minimal/config.json`).
+    /// Save imported config as clean fast JSON (`~/.config/jterm/config.json`).
     pub fn save_json(&self, path: &Path) -> Result<(), ProfileError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
