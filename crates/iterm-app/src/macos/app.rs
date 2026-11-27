@@ -437,6 +437,29 @@ impl AppController {
 
     fn toggle_hotkey_window(&self, mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
+        let has_dedicated_profile = self.ivars().app_cfg.borrow().hotkey.profile_guid.is_some();
+
+        // Standard iTerm2 global hotkey ("Show/hide all windows with a system-wide hotkey"):
+        // toggles app visibility without spawning a sticky `CanJoinAllSpaces` window!
+        if !has_dedicated_profile {
+            let has_windows = !self.ivars().windows.borrow().is_empty();
+            if !has_windows {
+                #[allow(deprecated)]
+                app.activateIgnoringOtherApps(true);
+                self.spawn_window(mtm, false);
+                return;
+            }
+            if app.isActive() && !app.isHidden() {
+                app.hide(None);
+            } else {
+                app.unhide(None);
+                #[allow(deprecated)]
+                app.activateIgnoringOtherApps(true);
+            }
+            return;
+        }
+
+        // Dedicated hotkey profile window (only when `hotkey.profile_guid` is explicitly configured)
         let existing_win: Option<Retained<NSWindow>> = self
             .ivars()
             .windows

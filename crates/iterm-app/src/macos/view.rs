@@ -1231,11 +1231,12 @@ pub fn create_terminal_window(
         // Transparent NSWindow MUST use clearColor() so Metal's pane_bg alpha is NEVER double-blended!
         window.setBackgroundColor(Some(&NSColor::clearColor()));
     }
+    // NEVER set `CanJoinAllSpaces` — terminal windows must stay on their assigned macOS Space
+    // when switching workspaces instead of following the user across Spaces!
     if is_hotkey_window {
-        window.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        );
+        window.setCollectionBehavior(NSWindowCollectionBehavior::FullScreenAuxiliary);
+    } else {
+        window.setCollectionBehavior(NSWindowCollectionBehavior::FullScreenPrimary);
     }
 
     let scale = window.backingScaleFactor() as f32;
