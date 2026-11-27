@@ -615,6 +615,12 @@ impl TerminalWindowState {
                 self.layout_and_resize_ptys(vp_w, vp_h);
                 self.notify_pane_focus_transition(prev);
             }
+            UiCommand::SelectLastTab => {
+                let prev = active_id;
+                self.tabs.select_last_tab();
+                self.layout_and_resize_ptys(vp_w, vp_h);
+                self.notify_pane_focus_transition(prev);
+            }
             UiCommand::MoveTabLeft => {
                 self.tabs.move_active_tab(-1);
                 self.wake_flag.store(true, Ordering::Release);

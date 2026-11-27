@@ -22,6 +22,7 @@ pub enum UiCommand {
     NextTab,
     PrevTab,
     SelectTab(usize),
+    SelectLastTab,
     MoveTabLeft,
     MoveTabRight,
     Copy,
@@ -146,10 +147,11 @@ pub fn resolve_key_event_with_kitty(
             ('u', false, false) => return UiCommand::ToggleTransparency,
             ('l', false, true) => return UiCommand::ToggleTransfers,
             ('i', false, true) => return UiCommand::TogglePerfHud,
-            ('1'..='9', false, false) => {
+            ('1'..='8', false, false) => {
                 let idx = (ch as u8 - b'1') as usize;
                 return UiCommand::SelectTab(idx);
             }
+            ('9', false, false) => return UiCommand::SelectLastTab,
             _ => {}
         }
         // Cmd+Opt+Arrow pane navigation

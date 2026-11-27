@@ -313,5 +313,28 @@ mod tests {
             resolve_key_event_with_kitty(&cmd_opt_l, &cfg, prof, TermModes::default(), 0),
             UiCommand::ToggleTransfers
         );
+        // Cmd+9 jumps to last tab; Cmd+1..8 jump to 0..7
+        let cmd_9 = KeyEventInput {
+            key_code_char: '9' as u32,
+            characters: "9".into(),
+            virtual_key: 25,
+            mods: modifiers::COMMAND,
+            is_right_option: false,
+        };
+        assert_eq!(
+            resolve_key_event_with_kitty(&cmd_9, &cfg, prof, TermModes::default(), 0),
+            UiCommand::SelectLastTab
+        );
+        let cmd_3 = KeyEventInput {
+            key_code_char: '3' as u32,
+            characters: "3".into(),
+            virtual_key: 20,
+            mods: modifiers::COMMAND,
+            is_right_option: false,
+        };
+        assert_eq!(
+            resolve_key_event_with_kitty(&cmd_3, &cfg, prof, TermModes::default(), 0),
+            UiCommand::SelectTab(2)
+        );
     }
 }

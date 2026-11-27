@@ -99,6 +99,12 @@ impl TabManager {
         }
     }
 
+    pub fn select_last_tab(&mut self) {
+        if !self.tabs.is_empty() {
+            self.active_index = self.tabs.len() - 1;
+        }
+    }
+
     pub fn next_tab(&mut self) {
         if !self.tabs.is_empty() {
             self.active_index = (self.active_index + 1) % self.tabs.len();

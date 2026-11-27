@@ -75,7 +75,7 @@ Download from GitHub Releases (`https://github.com/moomou/iterm-minimal/releases
 | `Cmd+T` / `Cmd+W` | New tab / close pane or tab |
 | `Cmd+D` / `Cmd+Shift+D` | Split vertically / split horizontally |
 | `Cmd+Shift+Enter` | Maximize / restore active pane |
-| `Cmd+Shift+[` / `Cmd+Shift+]` | Previous / next tab (`Cmd+1..9` jump directly) |
+| `Cmd+Shift+[` / `Cmd+Shift+]` | Previous / next tab (`Cmd+1..8` jump by index, `Cmd+9` jumps to last tab) |
 | `Cmd+U` | Toggle window transparency ON/OFF |
 | `Cmd+,` | Open native Preferences window |
 | `Cmd+F` / `Cmd+G` / `Cmd+Shift+G` | Inline Find / next / previous match |

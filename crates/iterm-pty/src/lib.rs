@@ -114,6 +114,7 @@ mod tests {
         tm.next_tab();
         tm.prev_tab();
         tm.select_tab(0);
+        tm.select_last_tab();
         tm.move_active_tab(1);
         assert_eq!(
             tm.focus_direction(
@@ -127,6 +128,20 @@ mod tests {
             ),
             None
         );
+
+        // Cmd+9 jumps to last tab whether there are 3 tabs or 12 tabs
+        let mut tm2 = TabManager::new(SessionId(1), "T1".into());
+        tm2.add_tab(SessionId(2), "T2".into());
+        tm2.add_tab(SessionId(3), "T3".into());
+        tm2.select_tab(0);
+        tm2.select_last_tab();
+        assert_eq!(tm2.active_index, 2);
+        for i in 4..=12u64 {
+            tm2.add_tab(SessionId(i), format!("T{i}"));
+        }
+        tm2.select_tab(0);
+        tm2.select_last_tab();
+        assert_eq!(tm2.active_index, 11);
     }
 
     #[test]
