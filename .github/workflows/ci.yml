@@ -20,6 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - run: iconutil -c iconset assets/AppIcon.icns -o /tmp/jterm-check.iconset && ls -la /tmp/jterm-check.iconset
       - run: cargo test --workspace
       - run: cargo build --release --bin jterm
       - run: ./target/release/jterm --version

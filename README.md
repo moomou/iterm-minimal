@@ -1,3 +1,7 @@
+<p align="left">
+  <img src="assets/AppIcon.png" width="96" height="96" alt="jterm app icon" />
+</p>
+
 # jterm (Rust + Metal + CoreText + AppKit)
 
 A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-in iTerm2 profile/plist/keymap compatibility, native Apple Metal GPU rendering, CoreText ligatures & `NSTextInputClient` IME, live PTY-wrapped `scp` Transfer Queue, and zero-wakeup macOS energy efficiency. Cross-compiled into an ad-hoc signed Universal (`arm64` + `x86_64`) macOS `JTerm.app` bundle and Linux x86_64 CLI/benchmark tool.

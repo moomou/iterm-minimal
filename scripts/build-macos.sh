@@ -44,6 +44,10 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
   <string>JTerm</string>
   <key>CFBundleExecutable</key>
   <string>jterm</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
+  <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>dev.moomou.jterm</string>
   <key>CFBundleInfoDictionaryVersion</key>
@@ -53,9 +57,9 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.21</string>
+  <string>0.1.22</string>
   <key>CFBundleVersion</key>
-  <string>21</string>
+  <string>22</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.developer-tools</string>
   <key>LSMinimumSystemVersion</key>
@@ -70,6 +74,7 @@ cat > "${APP_DIR}/Contents/Info.plist" << 'PLIST'
 </plist>
 PLIST
 
+cp -a "${ROOT}/assets/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"
 cp -a "${ROOT}/scripts/shell_integration/"* "${APP_DIR}/Contents/Resources/shell_integration/"
 # Also bundle user's standard imgcat & it2dl utilities if present on build host
 for util in imgcat it2dl; do
