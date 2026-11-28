@@ -79,6 +79,7 @@ mod tests {
         assert!(cfg.hide_scrollbar);
         assert!(cfg.hotkey.enabled);
         assert_eq!(cfg.hotkey.key_code, 34);
+        assert!(!cfg.hotkey.toggles_window);
         assert_eq!(cfg.word_characters, "/-+\\~_.");
 
         let prof = cfg.default_profile();

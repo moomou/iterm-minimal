@@ -49,7 +49,7 @@ impl Default for HotkeyConfig {
             key_code: 34,          // 'i'
             modifiers: modifiers::OPTION,
             char_code: 'i' as u32,
-            toggles_window: true,
+            toggles_window: false,
             profile_guid: None,
         }
     }

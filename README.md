@@ -61,16 +61,16 @@ A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-
 
 Download from GitHub Releases (`https://github.com/moomou/jterm/releases`):
 
-- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.24-macos-universal.zip` (or `.tar.gz`)
+- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.25-macos-universal.zip` (or `.tar.gz`)
   ```bash
-  unzip JTerm-v0.1.24-macos-universal.zip -d /Applications/
+  unzip JTerm-v0.1.25-macos-universal.zip -d /Applications/
   xattr -dr com.apple.quarantine /Applications/JTerm.app
   open /Applications/JTerm.app
   ```
-- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.24-linux-x86_64.tar.gz`
+- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.25-linux-x86_64.tar.gz`
   ```bash
-  tar -xzf jterm-v0.1.24-linux-x86_64.tar.gz
-  ./jterm-v0.1.24-linux-x86_64/jterm --benchmark
+  tar -xzf jterm-v0.1.25-linux-x86_64.tar.gz
+  ./jterm-v0.1.25-linux-x86_64/jterm --benchmark
   ```
 
 ### macOS Privacy & TCC Permissions (Screen Recording, Accessibility, etc.)

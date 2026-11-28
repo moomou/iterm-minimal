@@ -10,12 +10,13 @@ use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSEventModifierFlags,
-    NSMenu, NSMenuItem, NSWindow, NSWindowDelegate, NSWindowOcclusionState, NSWorkspace,
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
+    NSApplicationDelegate, NSEventModifierFlags, NSMenu, NSMenuItem, NSRunningApplication,
+    NSWindow, NSWindowDelegate, NSWindowListOptions, NSWindowOcclusionState, NSWorkspace,
     NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol, NSProcessInfo, NSString};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -24,6 +25,18 @@ use std::time::{Duration, Instant};
 extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// Activate JTerm without `NSApplicationActivateAllWindows` (matching iTerm2's `iTermAppHotKey`),
+/// avoiding macOS Space-switching when windows live on other Spaces.
+fn activate_app_current_space_only(app: &NSApplication) {
+    #[allow(deprecated)]
+    let ok = NSRunningApplication::currentApplication()
+        .activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
+    if !ok {
+        #[allow(deprecated)]
+        app.activateIgnoringOtherApps(true);
+    }
 }
 
 thread_local! {
@@ -163,7 +176,14 @@ define_class!(
 
         #[unsafe(method(menuNewTab:))]
         fn menu_new_tab(&self, _sender: Option<&AnyObject>) {
-            self.send_to_key_window(UiCommand::NewTab);
+            let mtm = MainThreadMarker::from(self);
+            let app = NSApplication::sharedApplication(mtm);
+            if let Some(view) = self.frontmost_view_on_active_space(&app) {
+                view.send_command(UiCommand::NewTab);
+            } else {
+                // Focused on an empty Space with no JTerm window here: open a fresh window on this Space!
+                self.spawn_window(mtm, false);
+            }
         }
 
         #[unsafe(method(menuSplitVertical:))]
@@ -491,31 +511,114 @@ impl AppController {
         }
     }
 
+    /// Return the frontmost non-minimized managed window currently on the active macOS desktop Space.
+    fn frontmost_window_on_active_space(&self, app: &NSApplication) -> Option<Retained<NSWindow>> {
+        let managed: Vec<Retained<NSWindow>> = self
+            .ivars()
+            .windows
+            .borrow()
+            .iter()
+            .map(|mw| mw.window.clone())
+            .collect();
+        if managed.is_empty() {
+            return None;
+        }
+        // Walk WindowServer's true front-to-back z-order to find the frontmost JTerm window on this Space.
+        let found: Cell<Option<*const NSWindow>> = Cell::new(None);
+        let blk = block2::StackBlock::new(
+            |w_ptr: std::ptr::NonNull<NSWindow>, stop: std::ptr::NonNull<objc2::runtime::Bool>| {
+                let w = unsafe { w_ptr.as_ref() };
+                if w.isVisible() && !w.isMiniaturized() && w.isOnActiveSpace() {
+                    let raw = w as *const NSWindow;
+                    if managed.iter().any(|mw| Retained::as_ptr(mw) == raw) {
+                        found.set(Some(raw));
+                        unsafe {
+                            *stop.as_ptr() = objc2::runtime::Bool::YES;
+                        }
+                    }
+                }
+            },
+        );
+        app.enumerateWindowsWithOptions_usingBlock(NSWindowListOptions::OrderedFrontToBack, &blk);
+        if let Some(raw) = found.get() {
+            if let Some(win) = managed.iter().find(|mw| Retained::as_ptr(mw) == raw) {
+                return Some(win.clone());
+            }
+        }
+        // Fallback when app is hidden (hidden windows are temporarily omitted from ordered list)
+        let hidden = app.isHidden();
+        managed
+            .into_iter()
+            .rev()
+            .find(|w| (hidden || w.isVisible()) && !w.isMiniaturized() && w.isOnActiveSpace())
+    }
+
+    /// Return the `TerminalMetalView` of the frontmost active-Space window (if any).
+    fn frontmost_view_on_active_space(
+        &self,
+        app: &NSApplication,
+    ) -> Option<Retained<TerminalMetalView>> {
+        let win = self.frontmost_window_on_active_space(app)?;
+        let ptr = &*win as *const NSWindow;
+        self.ivars()
+            .windows
+            .borrow()
+            .iter()
+            .find(|mw| &*mw.window as *const NSWindow == ptr)
+            .map(|mw| mw.view.clone())
+    }
+
     fn toggle_hotkey_window(&self, mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
-        let has_dedicated_profile = self.ivars().app_cfg.borrow().hotkey.profile_guid.is_some();
+        let use_dedicated_hotkey = {
+            let hk = &self.ivars().app_cfg.borrow().hotkey;
+            hk.toggles_window && hk.profile_guid.is_some()
+        };
 
-        // Standard iTerm2 global hotkey ("Show/hide all windows with a system-wide hotkey"):
-        // toggles app visibility without spawning a sticky `CanJoinAllSpaces` window!
-        if !has_dedicated_profile {
-            let has_windows = !self.ivars().windows.borrow().is_empty();
-            if !has_windows {
-                #[allow(deprecated)]
-                app.activateIgnoringOtherApps(true);
+        // Standard global hotkey (e.g. Opt+I): stay strictly on the current macOS desktop Space!
+        // - If an open window exists on the current Space: focus and bring THAT window forward.
+        // - If no window exists on the current Space (windows live on other Spaces): focus the
+        //   JTerm app only — NEVER call `app.unhide(None)`, `ActivateAllWindows`, or order
+        //   off-space windows front (which would yank macOS to another Space).
+        if !use_dedicated_hotkey {
+            let active_space_win = self.frontmost_window_on_active_space(&app);
+
+            if app.isActive() && !app.isHidden() {
+                if let Some(win) = active_space_win {
+                    if !win.isKeyWindow() {
+                        win.makeKeyAndOrderFront(None);
+                        return;
+                    }
+                }
+                app.hide(None);
+                return;
+            }
+
+            if let Some(win) = active_space_win {
+                if app.isHidden() {
+                    app.unhideWithoutActivation();
+                }
+                // Make the active-Space window key BEFORE activating so WindowServer focuses it
+                // on the current Space rather than jumping to a previous key window on another Space.
+                win.makeKeyAndOrderFront(None);
+                activate_app_current_space_only(&app);
+                return;
+            }
+
+            let has_any_windows = !self.ivars().windows.borrow().is_empty();
+            if !has_any_windows {
+                activate_app_current_space_only(&app);
                 self.spawn_window(mtm, false);
                 return;
             }
-            if app.isActive() && !app.isHidden() {
-                app.hide(None);
-            } else {
-                app.unhide(None);
-                #[allow(deprecated)]
-                app.activateIgnoringOtherApps(true);
-            }
+
+            // Windows exist only on other desktop Spaces: focus the JTerm application itself
+            // without unhiding/reordering off-space windows or switching desktop Spaces.
+            activate_app_current_space_only(&app);
             return;
         }
 
-        // Dedicated hotkey profile window (only when `hotkey.profile_guid` is explicitly configured)
+        // Dedicated hotkey profile window (only when both `HotKeyTogglesWindow=true` and `HotKeyBookmark` are set)
         let existing_win: Option<Retained<NSWindow>> = self
             .ivars()
             .windows
@@ -524,16 +627,17 @@ impl AppController {
             .find(|mw| mw.is_hotkey)
             .map(|mw| mw.window.clone());
         if let Some(win) = existing_win {
-            if win.isVisible() && app.isActive() {
+            if win.isVisible() && app.isActive() && win.isOnActiveSpace() {
                 win.orderOut(None);
-            } else {
-                #[allow(deprecated)]
-                app.activateIgnoringOtherApps(true);
+            } else if win.isOnActiveSpace() {
                 win.makeKeyAndOrderFront(None);
+                activate_app_current_space_only(&app);
+            } else {
+                // Dedicated hotkey window lives on another Space: focus JTerm without switching Spaces
+                activate_app_current_space_only(&app);
             }
         } else {
-            #[allow(deprecated)]
-            app.activateIgnoringOtherApps(true);
+            activate_app_current_space_only(&app);
             self.spawn_window(mtm, true);
         }
     }

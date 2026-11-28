@@ -419,7 +419,7 @@ impl AppConfig {
             key_code: get_i64("HotkeyCode", 34) as u16,
             modifiers: get_i64("HotkeyModifiers", 0x80000) as u32,
             char_code: get_i64("HotkeyChar", 105) as u32,
-            toggles_window: get_bool("HotKeyTogglesWindow", true),
+            toggles_window: get_bool("HotKeyTogglesWindow", false),
             profile_guid: get_str("HotKeyBookmark"),
         };
 
