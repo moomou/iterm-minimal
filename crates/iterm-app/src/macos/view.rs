@@ -2,7 +2,7 @@
 //! `NSDraggingDestination`, and full `NSTextInputClient` IME support) plus `create_terminal_window`.
 
 use crate::input_logic::{
-    encode_mouse_event, resolve_key_event_with_kitty, KeyEventInput, UiCommand,
+    encode_mouse_event, pop_find_word, resolve_key_event_with_kitty, KeyEventInput, UiCommand,
 };
 use crate::macos::chrome::{word_bounds_at, DIVIDER_WIDTH_PT};
 use crate::macos::clipboard::{read_pasteboard_files, write_clipboard};
@@ -217,6 +217,12 @@ define_class!(
                 }
                 let mut guard = self.ivars().state.borrow_mut();
                 if let Some(ref mut st) = *guard {
+                    let cmd_down = (mods & modifiers::COMMAND) != 0;
+                    let opt_down = (mods & modifiers::OPTION) != 0;
+                    let ctrl_down = (mods & modifiers::CONTROL) != 0;
+                    let ch_lower = char::from_u32(key_code_char)
+                        .map(|c| c.to_ascii_lowercase())
+                        .unwrap_or('\0');
                     if vk == 53 {
                         st.handle_command(UiCommand::ToggleFind, vp_w, vp_h);
                         st.render_if_needed(vp_w, vp_h);
@@ -235,34 +241,39 @@ define_class!(
                         st.render_if_needed(vp_w, vp_h);
                         return;
                     } else if vk == 51 {
-                        st.find.query.pop();
-                        if let Some(sid) = st.tabs.try_active_session() {
-                            if let Some(sess) = st.sessions.get(&sid) {
-                                st.find.match_count = sess.screen.lock().search(
-                                    &st.find.query,
-                                    st.find.regex,
-                                    st.find.ignore_case,
-                                );
-                            }
+                        // Cmd+Backspace clears entire query; Opt+Backspace deletes last word; plain pops 1 char
+                        if cmd_down {
+                            st.find.query.clear();
+                        } else if opt_down {
+                            pop_find_word(&mut st.find.query);
+                        } else {
+                            st.find.query.pop();
                         }
-                        st.wake_flag.store(true, Ordering::Release);
+                        st.run_find_search();
                         st.render_if_needed(vp_w, vp_h);
                         return;
-                    } else if (mods & modifiers::COMMAND) == 0
+                    } else if ctrl_down && !cmd_down && ch_lower == 'u' {
+                        st.find.query.clear();
+                        st.run_find_search();
+                        st.render_if_needed(vp_w, vp_h);
+                        return;
+                    } else if ctrl_down && !cmd_down && ch_lower == 'w' {
+                        pop_find_word(&mut st.find.query);
+                        st.run_find_search();
+                        st.render_if_needed(vp_w, vp_h);
+                        return;
+                    } else if cmd_down && !ctrl_down && ch_lower == 'v' {
+                        // Belt-and-suspenders Cmd+V fallback if menu Paste didn't intercept
+                        st.handle_command(UiCommand::Paste, vp_w, vp_h);
+                        st.render_if_needed(vp_w, vp_h);
+                        return;
+                    } else if !cmd_down
+                        && !ctrl_down
                         && !chars.is_empty()
                         && !chars.chars().all(|c| c.is_control())
                     {
                         st.find.query.push_str(&chars);
-                        if let Some(sid) = st.tabs.try_active_session() {
-                            if let Some(sess) = st.sessions.get(&sid) {
-                                st.find.match_count = sess.screen.lock().search(
-                                    &st.find.query,
-                                    st.find.regex,
-                                    st.find.ignore_case,
-                                );
-                            }
-                        }
-                        st.wake_flag.store(true, Ordering::Release);
+                        st.run_find_search();
                         st.render_if_needed(vp_w, vp_h);
                         return;
                     }
@@ -882,16 +893,7 @@ define_class!(
             }
             if st.find.active {
                 st.find.query.push_str(&text);
-                if let Some(sid) = st.tabs.try_active_session() {
-                    if let Some(sess) = st.sessions.get(&sid) {
-                        st.find.match_count = sess.screen.lock().search(
-                            &st.find.query,
-                            st.find.regex,
-                            st.find.ignore_case,
-                        );
-                    }
-                }
-                st.wake_flag.store(true, Ordering::Release);
+                st.run_find_search();
                 st.render_if_needed(vp_w, vp_h);
                 return;
             }

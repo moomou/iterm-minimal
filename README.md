@@ -61,16 +61,16 @@ A native, minimal, ultra-fast macOS terminal emulator written in Rust with drop-
 
 Download from GitHub Releases (`https://github.com/moomou/jterm/releases`):
 
-- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.25-macos-universal.zip` (or `.tar.gz`)
+- **macOS Universal (`arm64` Apple Silicon + `x86_64` Intel)**: `JTerm-v0.1.26-macos-universal.zip` (or `.tar.gz`)
   ```bash
-  unzip JTerm-v0.1.25-macos-universal.zip -d /Applications/
+  unzip JTerm-v0.1.26-macos-universal.zip -d /Applications/
   xattr -dr com.apple.quarantine /Applications/JTerm.app
   open /Applications/JTerm.app
   ```
-- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.25-linux-x86_64.tar.gz`
+- **Linux x86_64** (CLI profile inspector, benchmark suite, and bundled shell integration): `jterm-v0.1.26-linux-x86_64.tar.gz`
   ```bash
-  tar -xzf jterm-v0.1.25-linux-x86_64.tar.gz
-  ./jterm-v0.1.25-linux-x86_64/jterm --benchmark
+  tar -xzf jterm-v0.1.26-linux-x86_64.tar.gz
+  ./jterm-v0.1.26-linux-x86_64/jterm --benchmark
   ```
 
 ### macOS Privacy & TCC Permissions (Screen Recording, Accessibility, etc.)
@@ -94,7 +94,7 @@ Because public builds use an ad-hoc signature (no Apple Developer Team ID), macO
 | `Cmd+Shift+[` / `Cmd+Shift+]` | Previous / next tab (`Cmd+1..8` jump by index, `Cmd+9` jumps to last tab) |
 | `Cmd+U` | Toggle window transparency ON/OFF |
 | `Cmd+,` | Open native Preferences window |
-| `Cmd+F` / `Cmd+G` / `Cmd+Shift+G` | Inline Find / next / previous match |
+| `Cmd+F` / `Cmd+E` / `Cmd+G` / `Cmd+Shift+G` | Inline Find (supports `Cmd+V` paste, `Cmd+Backspace` clear, `Opt+Backspace` delete word) / Use Selection for Find / next / previous match |
 | `Cmd+K` | Clear scrollback & screen buffer |
 | `Cmd+Opt+L` | Toggle live SCP Transfers queue & progress overlay (cancel `[x]` / Clear) |
 | `Cmd+Opt+I` | Toggle live Metal GPU Performance HUD |

@@ -5,6 +5,7 @@ pub mod inline_image;
 pub mod parser;
 pub mod screen;
 pub mod scrollback;
+mod search;
 
 pub use cell::{Cell, CellExtra, CellFlags, PackedColor, Pen};
 pub use grid::{row_cells_to_string, ActiveGrid, PromptMark, RowMeta, StringPool};
@@ -549,6 +550,71 @@ mod tests {
         assert_eq!(wrap_trim.start, SelectionPoint { abs_line: r0, col: 2 });
         assert_eq!(wrap_trim.end, SelectionPoint { abs_line: r1, col: 1 });
         assert_eq!(w.extract_selection_text().as_deref(), Some("abcdefghij"));
+    }
+
+    #[test]
+    fn search_engine_handles_slab_boundaries_eviction_styled_wide_and_regex_parity() {
+        // 1. Packed-ASCII boundary-straddling test: end of line 0 ("foo") + start of line 1 ("bar")
+        //    must NEVER falsely match "foobar", while real "bar" on line 1 MUST match!
+        let mut s = TerminalScreen::new(40, 2, 100);
+        s.feed(b"prefix foo\r\nbarbaz foobar\r\nhello foo\r\nbar\r\n");
+        let n = s.search("foobar", false, true);
+        assert_eq!(n, 1, "must not match across packed ASCII line boundary");
+        assert_eq!(s.search_matches[0].start_col, 7);
+        assert_eq!(s.search_matches[0].end_col, 13);
+
+        // 2. Partial front-slab eviction: evicted lines must NEVER be matched!
+        let mut ev = TerminalScreen::new(40, 2, 10);
+        for i in 0..25 {
+            ev.feed(format!("line_{i:02} needle\r\n").as_bytes());
+        }
+        assert_eq!(ev.scrollback.len(), 10);
+        // Retained lines: 10 in scrollback (indices 13..23) + 2 on screen (23, 24) = 12 occurrences (1 line blank cursor)
+        let retained_matches = ev.search("NEEDLE", false, true);
+        assert!(retained_matches <= 12 && retained_matches >= 11);
+        let evicted = ev.scrollback.evicted_lines();
+        for m in &ev.search_matches {
+            assert!(m.abs_line >= evicted, "matched evicted line {}", m.abs_line);
+        }
+
+        // 3. Styled truecolor ASCII + wide CJK visual column accuracy!
+        let mut uni = TerminalScreen::new(40, 4, 50);
+        uni.feed("\x1b[38;2;255;0;0m日本\x1b[0m ERROR 東京\r\n".as_bytes());
+        uni.feed("Café über\r\n".as_bytes());
+        // '日' cols 0..2, '本' cols 2..4, ' ' col 4, 'E'..'R' cols 5..10
+        assert_eq!(uni.search("error", false, true), 1);
+        assert_eq!(uni.search_matches[0].start_col, 5);
+        assert_eq!(uni.search_matches[0].end_col, 10);
+        // CJK literal case-insensitive (no lowercase needed): '東' cols 11..13, '京' cols 13..15
+        assert_eq!(uni.search("東京", false, true), 1);
+        assert_eq!(uni.search_matches[0].start_col, 11);
+        assert_eq!(uni.search_matches[0].end_col, 15);
+        // Unicode cased fold: "café" matches "Café" at cols 0..4
+        assert_eq!(uni.search("café", false, true), 1);
+        assert_eq!(uni.search_matches[0].start_col, 0);
+        assert_eq!(uni.search_matches[0].end_col, 4);
+
+        // 4. Regex required-literal prefilter exact parity on tricky patterns!
+        let mut rx = TerminalScreen::new(80, 4, 100);
+        rx.feed(b"FATAL_TIMEOUT status=504\r\n");
+        rx.feed(b"ac abc abbc\r\n");
+        rx.feed(b"alpha beta gamma\r\n");
+        rx.feed(b"error[E0425] foo\r\n");
+        rx.feed(b"a0 b1\r\n");
+        let patterns = [
+            (r"FATAL_[A-Z]+.*status=\d+", false, 1usize),
+            (r"fatal_[a-z]+.*status=\d+", true, 1),
+            (r"ab?c", false, 2),       // matches "ac" and "abc" (must NOT require "ab"!)
+            (r"ab*c", false, 3),       // matches "ac", "abc", "abbc"
+            (r"ab{0,2}c", false, 3),   // matches all 3
+            (r"alpha|gamma", false, 2),// top-level alternation -> no single required literal
+            (r"error\[E\d+\]", false, 1),
+            (r"(?i)ALPHA", false, 1),  // inline (?i) flag inside case-sensitive search!
+        ];
+        for (pat, ci, expected) in patterns {
+            let got = rx.search(pat, true, ci);
+            assert_eq!(got, expected, "regex pattern {pat:?} (ci={ci})");
+        }
     }
 
     #[test]

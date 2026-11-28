@@ -1304,79 +1304,16 @@ impl TerminalScreen {
 
     /// Search across scrollback and active screen (case-insensitive substring or regex).
     pub fn search(&mut self, query: &str, regex_mode: bool, ignore_case: bool) -> usize {
-        self.search_matches.clear();
         self.active_search_match = None;
-        if query.is_empty() {
-            return 0;
-        }
-        let re = if regex_mode {
-            let pat = if ignore_case {
-                format!("(?i){query}")
-            } else {
-                query.to_string()
-            };
-            match regex_lite::Regex::new(&pat) {
-                Ok(r) => Some(r),
-                Err(_) => return 0,
-            }
-        } else {
-            None
-        };
-        let needle_lower = if ignore_case {
-            query.to_lowercase()
-        } else {
-            query.to_string()
-        };
-
-        let evicted = self.scrollback.evicted_lines();
-        let sb_len = self.scrollback.len();
-        let mut matches = Vec::new();
-
-        let mut scan_line = |abs_line: u64, text: &str| {
-            if let Some(ref re) = re {
-                for m in re.find_iter(text) {
-                    let start_col = text[..m.start()].chars().count();
-                    let len_chars = text[m.start()..m.end()].chars().count();
-                    if len_chars > 0 {
-                        matches.push(SearchMatch {
-                            abs_line,
-                            start_col,
-                            end_col: start_col + len_chars,
-                        });
-                    }
-                }
-            } else {
-                let hay = if ignore_case {
-                    text.to_lowercase()
-                } else {
-                    text.to_string()
-                };
-                let mut offset = 0;
-                while let Some(pos) = hay[offset..].find(&needle_lower) {
-                    let byte_start = offset + pos;
-                    let start_col = hay[..byte_start].chars().count();
-                    let len_chars = needle_lower.chars().count();
-                    matches.push(SearchMatch {
-                        abs_line,
-                        start_col,
-                        end_col: start_col + len_chars,
-                    });
-                    offset = byte_start + needle_lower.len().max(1);
-                }
-            }
-        };
-
-        for idx in 0..sb_len {
-            if let Some(line) = self.scrollback.line_text(idx) {
-                scan_line(evicted + idx as u64, &line);
-            }
-        }
-        let screen_top = evicted + sb_len as u64;
-        for r in 0..self.rows() {
-            let line = self.active_grid().row_text(r);
-            scan_line(screen_top + r as u64, &line);
-        }
-
+        let mut matches = std::mem::take(&mut self.search_matches);
+        crate::search::search_screen(
+            &self.scrollback,
+            self.active_grid(),
+            query,
+            regex_mode,
+            ignore_case,
+            &mut matches,
+        );
         self.search_matches = matches;
 
         if !self.search_matches.is_empty() {

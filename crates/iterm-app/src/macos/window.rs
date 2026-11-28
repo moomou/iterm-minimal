@@ -6,7 +6,7 @@
 //! - `chrome.rs`: compact 26 pt unified titlebar/tab strip, Find bar, Toast, and inline IME preedit
 //! - `transfers.rs`: SSH SCP paste/drop upload & Semantic History Cmd+Click downloads
 
-use crate::input_logic::UiCommand;
+use crate::input_logic::{sanitize_find_paste, UiCommand};
 use crate::macos::app::{schedule_main_wakeup, schedule_main_wakeup_after};
 use crate::macos::chrome::{get_local_hostname, make_ui_chrome_shaper, DIVIDER_WIDTH_PT};
 use crate::macos::clipboard::{
@@ -505,6 +505,20 @@ impl TerminalWindowState {
     }
 
     /// Execute a resolved `UiCommand` (keyboard shortcut or menu item).
+    /// Run inline Find search for the active session, updating `self.find.match_count` and wake flag.
+    pub(crate) fn run_find_search(&mut self) {
+        if let Some(sid) = self.tabs.try_active_session() {
+            if let Some(sess) = self.sessions.get(&sid) {
+                self.find.match_count = sess.screen.lock().search(
+                    &self.find.query,
+                    self.find.regex,
+                    self.find.ignore_case,
+                );
+            }
+        }
+        self.wake_flag.store(true, Ordering::Release);
+    }
+
     pub fn handle_command(&mut self, cmd: UiCommand, vp_w: f32, vp_h: f32) {
         if self.should_close || self.tabs.is_empty() {
             if matches!(cmd, UiCommand::NewWindow) {
@@ -642,10 +656,29 @@ impl TerminalWindowState {
                 if let Some(sess) = self.sessions.get(&active_id) {
                     if let Some(text) = sess.screen.lock().extract_selection_text() {
                         write_clipboard(&text);
+                    } else if self.find.active && !self.find.query.is_empty() {
+                        write_clipboard(&self.find.query);
                     }
                 }
             }
             UiCommand::Paste => {
+                if self.find.active {
+                    let pasted = read_clipboard().or_else(|| match read_clipboard_content() {
+                        Some(ClipboardContent::Files(paths)) => paths
+                            .first()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().into_owned()),
+                        _ => None,
+                    });
+                    if let Some(text) = pasted {
+                        let cleaned = sanitize_find_paste(&text);
+                        if !cleaned.is_empty() {
+                            self.find.query.push_str(&cleaned);
+                            self.run_find_search();
+                        }
+                    }
+                    return;
+                }
                 match read_clipboard_content() {
                     Some(ClipboardContent::Files(paths)) => {
                         self.handle_local_files_attach(active_id, paths);
@@ -700,8 +733,27 @@ impl TerminalWindowState {
                         s.search_matches.clear();
                         s.active_search_match = None;
                     }
+                    self.find.match_count = 0;
+                    self.wake_flag.store(true, Ordering::Release);
+                } else if !self.find.query.is_empty() {
+                    self.run_find_search();
+                } else {
+                    self.wake_flag.store(true, Ordering::Release);
                 }
-                self.wake_flag.store(true, Ordering::Release);
+            }
+            UiCommand::UseSelectionForFind => {
+                let sel_text = self
+                    .sessions
+                    .get(&active_id)
+                    .and_then(|sess| sess.screen.lock().extract_selection_text());
+                if let Some(raw) = sel_text {
+                    let cleaned = sanitize_find_paste(&raw);
+                    if !cleaned.is_empty() {
+                        self.find.query = cleaned;
+                        self.find.active = true;
+                        self.run_find_search();
+                    }
+                }
             }
             UiCommand::FindNext => {
                 if let Some(sess) = self.sessions.get(&active_id) {

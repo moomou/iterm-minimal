@@ -231,6 +231,21 @@ define_class!(
             self.send_to_key_window(UiCommand::ToggleFind);
         }
 
+        #[unsafe(method(menuFindNext:))]
+        fn menu_find_next(&self, _sender: Option<&AnyObject>) {
+            self.send_to_key_window(UiCommand::FindNext);
+        }
+
+        #[unsafe(method(menuFindPrev:))]
+        fn menu_find_prev(&self, _sender: Option<&AnyObject>) {
+            self.send_to_key_window(UiCommand::FindPrev);
+        }
+
+        #[unsafe(method(menuUseSelectionForFind:))]
+        fn menu_use_selection_for_find(&self, _sender: Option<&AnyObject>) {
+            self.send_to_key_window(UiCommand::UseSelectionForFind);
+        }
+
         #[unsafe(method(menuClearBuffer:))]
         fn menu_clear_buffer(&self, _sender: Option<&AnyObject>) {
             self.send_to_key_window(UiCommand::ClearBuffer);
@@ -756,7 +771,19 @@ fn build_menu_bar(
     add_item(&edit_menu, "Copy", sel!(menuCopy:), "c", cmd, tgt);
     add_item(&edit_menu, "Paste", sel!(menuPaste:), "v", cmd, tgt);
     add_item(&edit_menu, "Advanced Paste", sel!(menuAdvancedPaste:), "v", cmd_shift, tgt);
+    edit_menu.addItem(&NSMenuItem::separatorItem(mtm));
     add_item(&edit_menu, "Find...", sel!(menuFind:), "f", cmd, tgt);
+    add_item(&edit_menu, "Find Next", sel!(menuFindNext:), "g", cmd, tgt);
+    add_item(&edit_menu, "Find Previous", sel!(menuFindPrev:), "g", cmd_shift, tgt);
+    add_item(
+        &edit_menu,
+        "Use Selection for Find",
+        sel!(menuUseSelectionForFind:),
+        "e",
+        cmd,
+        tgt,
+    );
+    edit_menu.addItem(&NSMenuItem::separatorItem(mtm));
     add_item(&edit_menu, "Clear Buffer", sel!(menuClearBuffer:), "k", cmd, tgt);
 
     // View menu

@@ -28,12 +28,14 @@ fn main() {
     let mut plist_path: Option<PathBuf> = None;
     let mut import_plist: Option<PathBuf> = None;
     let mut run_bench = false;
+    let mut run_find_bench = false;
     let mut dump_profile = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--benchmark" | "--bench" => run_bench = true,
+            "--benchmark-find" | "--bench-find" => run_find_bench = true,
             "--dump-profile" => dump_profile = true,
             "--plist" => {
                 if let Some(p) = args.get(i + 1) {
@@ -59,7 +61,8 @@ fn main() {
                      --plist <PATH>         Launch directly using an iTerm2 com.googlecode.iterm2.plist\n  \
                      --import-plist <PATH>  One-time import iTerm2 plist to ~/.config/jterm/config.json\n  \
                      --dump-profile         Print resolved active profile & keymap summary\n  \
-                     --benchmark            Run VT, dirty-row frame prep, scrollback, and PTY benchmarks\n  \
+                     --benchmark            Run VT, dirty-row frame prep, scrollback, PTY, and Find benchmarks\n  \
+                     --benchmark-find       Run Find (Cmd+F) 100k-line scrollback benchmarks only\n  \
                      -V, --version          Print version\n  \
                      -h, --help             Print help"
                 );
@@ -100,6 +103,11 @@ fn main() {
 
     if run_bench {
         bench_runner::run_all_benchmarks();
+        return;
+    }
+
+    if run_find_bench {
+        bench_runner::run_find_benchmark_suite();
         return;
     }
 
@@ -144,8 +152,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use crate::input_logic::{
-        encode_mouse_event, resolve_key_event, resolve_key_event_with_kitty, KeyEventInput,
-        UiCommand,
+        encode_mouse_event, pop_find_word, resolve_key_event, resolve_key_event_with_kitty,
+        sanitize_find_paste, KeyEventInput, UiCommand,
     };
     use iterm_profile::{modifiers, AppConfig};
     use iterm_vt::TermModes;
@@ -348,5 +356,26 @@ mod tests {
             resolve_key_event_with_kitty(&cmd_m, &cfg, prof, TermModes::default(), 0),
             UiCommand::MinimizeWindow
         );
+        // Cmd+E uses current selection for Find
+        let cmd_e = KeyEventInput {
+            key_code_char: 'e' as u32,
+            characters: "e".into(),
+            virtual_key: 14,
+            mods: modifiers::COMMAND,
+            is_right_option: false,
+        };
+        assert_eq!(
+            resolve_key_event_with_kitty(&cmd_e, &cfg, prof, TermModes::default(), 0),
+            UiCommand::UseSelectionForFind
+        );
+        // Find bar paste sanitization & word-delete helpers
+        assert_eq!(sanitize_find_paste("error_code\r\n"), "error_code");
+        assert_eq!(sanitize_find_paste("line1\r\nline2\nline3\n"), "line1 line2 line3");
+        assert_eq!(sanitize_find_paste("\x1bfoo\tbar\x00"), "foo bar");
+        let mut q = "fatal_timeout status".to_string();
+        pop_find_word(&mut q);
+        assert_eq!(q, "fatal_timeout ");
+        pop_find_word(&mut q);
+        assert_eq!(q, "");
     }
 }

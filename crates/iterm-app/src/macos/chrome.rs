@@ -236,7 +236,7 @@ impl TerminalWindowState {
         // Inline Find Bar overlay (top-right pill when Cmd+F active)
         if self.find.active {
             let m = self.ui_shaper.metrics();
-            let fw = (300.0 * self.scale_factor).min(vp_w - 16.0);
+            let fw = (340.0 * self.scale_factor).min(vp_w - 16.0);
             let fh = FIND_BAR_HEIGHT_PT * self.scale_factor;
             let fx = vp_w - fw - 10.0 * self.scale_factor;
             let fy = tab_h + 6.0 * self.scale_factor;
@@ -247,10 +247,29 @@ impl TerminalWindowState {
                 param: 5.0 * self.scale_factor,
                 _pad: [0.0; 2],
             });
-            let find_label = format!("Find: {} ({})", self.find.query, self.find.match_count);
+            let active_idx_1 = self
+                .tabs
+                .try_active_session()
+                .and_then(|sid| self.sessions.get(&sid))
+                .and_then(|sess| sess.screen.lock().active_search_match)
+                .map(|idx| idx + 1);
+            let count_suffix = match (active_idx_1, self.find.match_count) {
+                (Some(cur), total) if total > 0 => format!(" ({cur}/{total})"),
+                (_, total) => format!(" ({total})"),
+            };
             let max_chars = ((fw - 14.0 * self.scale_factor) / m.cell_width)
                 .floor()
                 .max(1.0) as usize;
+            let prefix = "Find: ";
+            let avail_query = max_chars.saturating_sub(prefix.chars().count() + count_suffix.chars().count());
+            let q_chars: Vec<char> = self.find.query.chars().collect();
+            let shown_query: String = if q_chars.len() > avail_query && avail_query > 1 {
+                let tail: String = q_chars[q_chars.len() - (avail_query - 1)..].iter().collect();
+                format!("…{tail}")
+            } else {
+                self.find.query.clone()
+            };
+            let find_label = format!("{prefix}{shown_query}{count_suffix}");
             render_ui_string(
                 &find_label,
                 max_chars,

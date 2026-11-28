@@ -134,6 +134,126 @@ pub fn generate_16mb_base64() -> Vec<u8> {
     buf
 }
 
+/// Summary metrics for one Find (`Cmd+F`) benchmark workload.
+#[derive(Debug, Clone)]
+pub struct FindBenchResult {
+    pub workload: &'static str,
+    pub lines: usize,
+    pub bytes: usize,
+    pub matches: usize,
+    pub elapsed_ms: f64,
+    pub throughput_mb_s: f64,
+}
+
+/// Comprehensive 100,000-line Find (`Cmd+F`) benchmark suite covering:
+/// - Plain packed-ASCII scrollback: miss, rare hit, dense hit, case-sensitive, 1-char typing worst-case
+/// - Styled/truecolor (`slab.cells`) scrollback: real colored compiler/git/log output
+/// - Mixed Unicode/CJK scrollback: literal & regex search
+pub fn run_find_benchmarks() -> Vec<FindBenchResult> {
+    let mut out = Vec::new();
+
+    // Build 100,000-line plain ASCII scrollback (~9.5 MiB)
+    let mut ascii_screen = TerminalScreen::new(140, 40, 100_000);
+    let mut ascii_bytes = 0usize;
+    {
+        let mut batch = Vec::with_capacity(128 * 1024);
+        for i in 0..100_000usize {
+            batch.clear();
+            let line = if i % 1000 == 42 {
+                format!("2026-11-28T18:00:00Z ERROR worker::engine line={i:06} FATAL_TIMEOUT latency=42.5ms status=504\r\n")
+            } else if i % 10 == 0 {
+                format!("2026-11-28T18:00:00Z WARN  worker::engine line={i:06} retry=true latency=1.24ms status=200\r\n")
+            } else {
+                format!("2026-11-28T18:00:00Z INFO  worker::loop   line={i:06} processed batch=1024 latency=0.12ms status=200\r\n")
+            };
+            ascii_bytes += line.len();
+            batch.extend_from_slice(line.as_bytes());
+            ascii_screen.feed(&batch);
+        }
+    }
+
+    // Build 100,000-line styled/truecolor scrollback (forces `slab.cells` tier — real cargo/git logs!)
+    let mut styled_screen = TerminalScreen::new(140, 40, 100_000);
+    let mut styled_bytes = 0usize;
+    {
+        let mut batch = Vec::with_capacity(256 * 1024);
+        for chunk_i in 0..100usize {
+            batch.clear();
+            for j in 0..1000usize {
+                let i = chunk_i * 1000 + j;
+                let s = if i % 500 == 7 {
+                    format!("\x1b[1;38;2;255;85;85merror[E0425]\x1b[0m: cannot find value `frame_{i:06}` in this scope\r\n")
+                } else {
+                    format!("\x1b[38;2;80;250;123mCompiling\x1b[0m crate_{:03} v0.1.25 (line={i:06} latency=0.18ms ok)\r\n", i % 64)
+                };
+                styled_bytes += 72; // approximate visible char bytes per line
+                batch.extend_from_slice(s.as_bytes());
+            }
+            styled_screen.feed(&batch);
+        }
+    }
+
+    // Build 25,000-line Unicode/CJK + ASCII mixed scrollback (~2.2 MiB visible)
+    let mut unicode_screen = TerminalScreen::new(140, 40, 25_000);
+    let mut unicode_bytes = 0usize;
+    {
+        let mut batch = Vec::with_capacity(256 * 1024);
+        for chunk_i in 0..25usize {
+            batch.clear();
+            for j in 0..1000usize {
+                let i = chunk_i * 1000 + j;
+                let s = if i % 250 == 13 {
+                    format!("日本語ログ [{i:05}] 警告: 接続タイムアウト err=504 (Tokyo/東京) status=FAIL\r\n")
+                } else {
+                    format!("日本語ログ [{i:05}] 情報: 正常処理完了 latency=0.25ms (Tokyo/東京) status=OK\r\n")
+                };
+                unicode_bytes += s.len();
+                batch.extend_from_slice(s.as_bytes());
+            }
+            unicode_screen.feed(&batch);
+        }
+    }
+
+    let mut run_case = |workload: &'static str,
+                        scr: &mut TerminalScreen,
+                        lines: usize,
+                        bytes: usize,
+                        query: &str,
+                        regex_mode: bool,
+                        ignore_case: bool| {
+        let _ = scr.search(query, regex_mode, ignore_case);
+        let mut best_dt = f64::MAX;
+        let mut matches = 0usize;
+        for _ in 0..3 {
+            let t0 = Instant::now();
+            matches = scr.search(query, regex_mode, ignore_case);
+            let dt = t0.elapsed().as_secs_f64();
+            if dt < best_dt {
+                best_dt = dt;
+            }
+        }
+        out.push(FindBenchResult {
+            workload,
+            lines,
+            bytes,
+            matches,
+            elapsed_ms: best_dt * 1000.0,
+            throughput_mb_s: (bytes as f64 / (1024.0 * 1024.0)) / best_dt.max(1e-9),
+        });
+    };
+
+    run_case("ASCII 100k: miss (case-insens)", &mut ascii_screen, 100_000, ascii_bytes, "DOES_NOT_EXIST_XYZ", false, true);
+    run_case("ASCII 100k: rare hit (case-insens)", &mut ascii_screen, 100_000, ascii_bytes, "fatal_timeout", false, true);
+    run_case("ASCII 100k: case-sensitive hit", &mut ascii_screen, 100_000, ascii_bytes, "FATAL_TIMEOUT", false, false);
+    run_case("ASCII 100k: 10k hits (case-insens)", &mut ascii_screen, 100_000, ascii_bytes, "retry=true", false, true);
+    run_case("ASCII 100k: 1-char 'e' (worst-case)", &mut ascii_screen, 100_000, ascii_bytes, "e", false, true);
+    run_case("ASCII 100k: regex search", &mut ascii_screen, 100_000, ascii_bytes, r"FATAL_[A-Z]+.*status=\d+", true, false);
+    run_case("Styled 100k: truecolor cells (ci)", &mut styled_screen, 100_000, styled_bytes, "error[e0425]", false, true);
+    run_case("Unicode 25k: CJK + ASCII (ci)", &mut unicode_screen, 25_000, unicode_bytes, "接続タイムアウト", false, true);
+
+    out
+}
+
 pub fn run_vt_benchmarks() -> Vec<BenchResult> {
     let workloads: [(&'static str, &'static str, Vec<u8>); 9] = [
         ("kitten", "ASCII (8 MiB)", generate_kitten_ascii()),

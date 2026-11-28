@@ -1,8 +1,51 @@
 use iterm_profile::Profile;
 use iterm_pty::{PtySize, TerminalSession};
-use iterm_render::{CachedShaper, FrameBatches, GlyphAtlas, MockShaper, PaneRenderCache};
-use iterm_vt::{bench::run_vt_benchmarks, TerminalScreen};
+use iterm_render::{CachedShaper, FrameBatches, GlyphAtlas, MockShaper, PaneRenderCache, PaneSnapshot};
+use iterm_vt::{
+    bench::{run_find_benchmarks, run_vt_benchmarks},
+    TerminalScreen,
+};
 use std::time::{Duration, Instant};
+
+/// Run Find (`Cmd+F`) performance benchmarks + PaneSnapshot match-slicing benchmark.
+pub fn run_find_benchmark_suite() {
+    println!("==========================================================================");
+    println!("  jterm (Rust) Find (Cmd+F) Performance Benchmarks");
+    println!("==========================================================================");
+    println!("   {:<38} {:>9} {:>10} {:>11}", "Workload", "Matches", "Time (ms)", "Throughput");
+    println!("   ----------------------------------------------------------------------");
+    for res in run_find_benchmarks() {
+        println!(
+            "   {:<38} {:>9} {:>9.2} ms {:>8.1} MB/s",
+            res.workload, res.matches, res.elapsed_ms, res.throughput_mb_s
+        );
+    }
+
+    // Also benchmark PaneSnapshot::capture() per-frame overhead while 100k+ matches are active!
+    let mut screen = TerminalScreen::new(140, 40, 100_000);
+    let line = b"2026-11-28T18:00:00Z INFO worker::engine processed event latency=0.12ms status=200\r\n";
+    let mut chunk = Vec::with_capacity(line.len() * 1000);
+    for _ in 0..1000 {
+        chunk.extend_from_slice(line);
+    }
+    for _ in 0..100 {
+        screen.feed(&chunk);
+    }
+    let m_count = screen.search("e", false, true);
+    let mut snap = PaneSnapshot::default();
+    snap.capture(&screen); // cold capture
+    let iters = 200;
+    let t0 = Instant::now();
+    for _ in 0..iters {
+        let _ = snap.capture(&screen);
+    }
+    let avg_us = (t0.elapsed().as_secs_f64() * 1_000_000.0) / iters as f64;
+    println!(
+        "   {:<38} {:>9} {:>8.1} us/frame (200-frame avg)",
+        "PaneSnapshot::capture w/ active find", m_count, avg_us
+    );
+    println!("==========================================================================");
+}
 
 /// Run comprehensive performance benchmarks comparing against iTerm2's baseline
 /// from `docs/minimal-perf-plan.md` (CPU text build, VT throughput, scrollback RSS, PTY throughput).
@@ -160,5 +203,8 @@ pub fn run_all_benchmarks() {
             done
         );
     }
-    println!("\n==========================================================================");
+
+    // 5. Find (Cmd+F) performance benchmarks across 100,000-line scrollback
+    println!();
+    run_find_benchmark_suite();
 }

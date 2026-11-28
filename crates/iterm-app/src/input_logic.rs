@@ -32,6 +32,7 @@ pub enum UiCommand {
     ToggleFind,
     FindNext,
     FindPrev,
+    UseSelectionForFind,
     FontIncrease,
     FontDecrease,
     FontReset,
@@ -139,6 +140,7 @@ pub fn resolve_key_event_with_kitty(
             ('v', true, false) => return UiCommand::AdvancedPaste,
             ('k', false, false) => return UiCommand::ClearBuffer,
             ('f', false, false) => return UiCommand::ToggleFind,
+            ('e', false, false) => return UiCommand::UseSelectionForFind,
             ('g', false, false) => return UiCommand::FindNext,
             ('g', true, false) => return UiCommand::FindPrev,
             ('+', _, false) | ('=', _, false) => return UiCommand::FontIncrease,
@@ -445,6 +447,56 @@ fn encode_tilde_key(num: u8, mod_param: u8) -> Vec<u8> {
         format!("\x1b[{num};{mod_param}~").into_bytes()
     } else {
         format!("\x1b[{num}~").into_bytes()
+    }
+}
+
+/// Sanitize pasted or selection text for the single-line inline `Cmd+F` Find bar:
+/// trims trailing CR/LF, collapses internal line breaks into single spaces, and strips
+/// non-printable ASCII control characters.
+pub fn sanitize_find_paste(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches(['\r', '\n']);
+    let mut out = String::with_capacity(trimmed.len());
+    let mut prev_nl = false;
+    for ch in trimmed.chars() {
+        match ch {
+            '\r' | '\n' => {
+                if !prev_nl {
+                    out.push(' ');
+                    prev_nl = true;
+                }
+            }
+            '\t' => {
+                out.push(' ');
+                prev_nl = false;
+            }
+            c if c.is_control() => {}
+            c => {
+                out.push(c);
+                prev_nl = false;
+            }
+        }
+    }
+    out
+}
+
+/// Delete the trailing word from the Find bar query (`Opt+Backspace` / `Ctrl+W`).
+pub fn pop_find_word(query: &mut String) {
+    while query.chars().last().is_some_and(|c| c.is_whitespace()) {
+        query.pop();
+    }
+    while query
+        .chars()
+        .last()
+        .is_some_and(|c| !c.is_whitespace() && (c.is_alphanumeric() || c == '_'))
+    {
+        query.pop();
+    }
+    if query
+        .chars()
+        .last()
+        .is_some_and(|c| !c.is_whitespace() && !c.is_alphanumeric() && c != '_')
+    {
+        query.pop();
     }
 }
 

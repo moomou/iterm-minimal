@@ -62,6 +62,8 @@ pub struct PaneSnapshot {
     pub selection: Option<Selection>,
     pub search_matches: Vec<SearchMatch>,
     pub active_search_match: Option<usize>,
+    pub active_search_range: Option<SearchMatch>,
+    prev_search_matches: Vec<SearchMatch>,
     pub cells: Vec<Cell>,
     pub row_gens: Vec<u64>,
     pub row_abs_lines: Vec<u64>,
@@ -80,6 +82,9 @@ impl PaneSnapshot {
         let rows = screen.rows();
         let cols = screen.cols();
         let dims_changed = self.cols != cols || self.rows != rows;
+        let active_range = screen
+            .active_search_match
+            .and_then(|idx| screen.search_matches.get(idx).copied());
         let mut changed = dims_changed
             || self.viewport_offset != screen.viewport_offset
             || self.cursor.col != screen.cursor.col
@@ -88,7 +93,8 @@ impl PaneSnapshot {
             || self.cursor.blinking != screen.cursor.blinking
             || self.modes != screen.modes
             || self.selection != screen.selection
-            || self.active_search_match != screen.active_search_match;
+            || self.active_search_match != screen.active_search_match
+            || self.active_search_range != active_range;
 
         self.cols = cols;
         self.rows = rows;
@@ -97,6 +103,7 @@ impl PaneSnapshot {
         self.modes = screen.modes;
         self.selection = screen.selection;
         self.active_search_match = screen.active_search_match;
+        self.active_search_range = active_range;
 
         if dims_changed {
             self.cells.resize(rows * cols, Cell::BLANK);
@@ -110,18 +117,23 @@ impl PaneSnapshot {
             self.grapheme_tails.clear();
         }
 
+        // O(log M + K_visible) binary search into ascending `screen.search_matches`!
         let top_abs = screen.visible_abs_line(0);
         let end_abs = top_abs + rows as u64;
-        let prev_search_len = self.search_matches.len();
+        std::mem::swap(&mut self.prev_search_matches, &mut self.search_matches);
         self.search_matches.clear();
         if !screen.search_matches.is_empty() {
-            for m in &screen.search_matches {
-                if m.abs_line >= top_abs && m.abs_line < end_abs {
-                    self.search_matches.push(*m);
+            let start = screen
+                .search_matches
+                .partition_point(|m| m.abs_line < top_abs);
+            for m in &screen.search_matches[start..] {
+                if m.abs_line >= end_abs {
+                    break;
                 }
+                self.search_matches.push(*m);
             }
         }
-        if prev_search_len != self.search_matches.len() || !self.search_matches.is_empty() {
+        if self.search_matches != self.prev_search_matches {
             changed = true;
         }
 
@@ -852,10 +864,15 @@ fn build_row_gpu<S: TextShaper>(
         flush_bg(run_bg_start, cols, prev, &mut out.bg_quads);
     }
 
-    // Search match highlight overlays on this row
+    // Search match highlight overlays on this row (bright orange for active match, yellow for others)
     for m in &snap.search_matches {
         if m.abs_line == abs_line {
-            let hl = [0.95, 0.85, 0.20, 0.55];
+            let is_active = snap.active_search_range == Some(*m);
+            let hl = if is_active {
+                [1.0, 0.58, 0.12, 0.80]
+            } else {
+                [0.95, 0.85, 0.20, 0.48]
+            };
             out.bg_quads.push(QuadInstance {
                 rect: [
                     origin_x + m.start_col as f32 * cw,
